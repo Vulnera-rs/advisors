@@ -22,7 +22,21 @@ impl AdvisorySource for OSVSource {
         let mut advisories = Vec::new();
         let client = reqwest::Client::new();
 
-        for ecosystem in &self.ecosystems {
+        let ecosystems = if self.ecosystems.is_empty() {
+            info!("No ecosystems specified, fetching list from OSV...");
+            let url = "https://osv-vulnerabilities.storage.googleapis.com/ecosystems.txt";
+            let response = client.get(url).send().await?;
+            if !response.status().is_success() {
+                warn!("Failed to fetch ecosystems list: {}", response.status());
+                return Ok(vec![]);
+            }
+            let text = response.text().await?;
+            text.lines().map(|s| s.to_string()).collect()
+        } else {
+            self.ecosystems.clone()
+        };
+
+        for ecosystem in &ecosystems {
             let url = format!(
                 "https://osv-vulnerabilities.storage.googleapis.com/{}/all.zip",
                 ecosystem
@@ -39,9 +53,22 @@ impl AdvisorySource for OSVSource {
                 continue;
             }
 
-            let bytes = response.bytes().await?;
-            let reader = std::io::Cursor::new(bytes);
-            let mut zip = zip::ZipArchive::new(reader)?;
+            // Create a temporary file
+            let mut tmp_file = tempfile::tempfile()?;
+            let mut content = response.bytes_stream();
+
+            // Stream download to file
+            use futures_util::StreamExt;
+            while let Some(chunk) = content.next().await {
+                let chunk = chunk?;
+                std::io::Write::write_all(&mut tmp_file, &chunk)?;
+            }
+
+            // Rewind file for reading
+            use std::io::Seek;
+            tmp_file.seek(std::io::SeekFrom::Start(0))?;
+
+            let mut zip = zip::ZipArchive::new(tmp_file)?;
 
             for i in 0..zip.len() {
                 let mut file = zip.by_index(i)?;
