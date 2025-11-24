@@ -1,5 +1,5 @@
 [package]
-name = "vulnera-advisors"
+name = "vulnera-advisor"
 version = "0.1.0"
 edition = "2024"
 description = "Aggregates security advisories from GHSA, NVD, OSV, CISA KEV, and more"
