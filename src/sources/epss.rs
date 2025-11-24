@@ -87,7 +87,11 @@ impl EpssSource {
     ///
     /// * `min_epss` - Minimum EPSS probability (0.0 - 1.0)
     /// * `limit` - Maximum number of results (default: 100)
-    pub async fn fetch_high_risk(&self, min_epss: f64, limit: Option<u32>) -> Result<Vec<EpssScore>> {
+    pub async fn fetch_high_risk(
+        &self,
+        min_epss: f64,
+        limit: Option<u32>,
+    ) -> Result<Vec<EpssScore>> {
         let limit = limit.unwrap_or(100);
         let url = format!("{}?epss-gt={}&limit={}", EPSS_API_URL, min_epss, limit);
 
@@ -125,7 +129,10 @@ impl EpssSource {
             EPSS_API_URL, min_percentile, limit
         );
 
-        info!("Fetching CVEs in top {} percentile", (1.0 - min_percentile) * 100.0);
+        info!(
+            "Fetching CVEs in top {} percentile",
+            (1.0 - min_percentile) * 100.0
+        );
 
         let response = self.client.get(&url).send().await?;
 

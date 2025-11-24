@@ -380,12 +380,10 @@ impl AdvisoryStore for DragonflyStore {
             redis::cmd("MGET").arg(&keys).query_async(&mut conn).await?;
 
         let mut advisories = Vec::new();
-        for bytes_opt in data {
-            if let Some(bytes) = bytes_opt {
-                let decompressed = Self::decompress(&bytes)?;
-                let advisory: Advisory = serde_json::from_slice(&decompressed)?;
-                advisories.push(advisory);
-            }
+        for bytes in data.into_iter().flatten() {
+            let decompressed = Self::decompress(&bytes)?;
+            let advisory: Advisory = serde_json::from_slice(&decompressed)?;
+            advisories.push(advisory);
         }
 
         Ok(advisories)

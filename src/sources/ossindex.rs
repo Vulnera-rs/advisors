@@ -116,7 +116,7 @@ impl OssIndexSource {
     ///
     /// If `config` is `None`, configuration is loaded from environment variables.
     pub fn new(config: Option<OssIndexConfig>) -> Result<Self> {
-        let config = config.unwrap_or_else(|| Self::config_from_env());
+        let config = config.unwrap_or_else(Self::config_from_env);
 
         let retry_policy = ExponentialBackoff::builder().build_with_max_retries(3);
         let client = ClientBuilder::new(Client::new())
