@@ -18,9 +18,21 @@ impl OSVSource {
 
 #[async_trait]
 impl AdvisorySource for OSVSource {
-    async fn fetch(&self, _since: Option<DateTime<Utc>>) -> Result<Vec<Advisory>> {
+    async fn fetch(&self, since: Option<DateTime<Utc>>) -> Result<Vec<Advisory>> {
+        // ... implementation ...
+        self.fetch_internal(since).await
+    }
+
+    fn name(&self) -> &str {
+        "OSV"
+    }
+}
+
+impl OSVSource {
+    async fn fetch_internal(&self, since: Option<DateTime<Utc>>) -> Result<Vec<Advisory>> {
         let mut advisories = Vec::new();
         let client = reqwest::Client::new();
+        // ... existing fetch logic ...
 
         let ecosystems = if self.ecosystems.is_empty() {
             info!("No ecosystems specified, fetching list from OSV...");
@@ -43,7 +55,18 @@ impl AdvisorySource for OSVSource {
             );
             info!("Fetching OSV data for {} from {}", ecosystem, url);
 
-            let response = client.get(&url).send().await?;
+            let mut request = client.get(&url);
+            if let Some(since) = since {
+                request = request.header(reqwest::header::IF_MODIFIED_SINCE, since.to_rfc2822());
+            }
+
+            let response = request.send().await?;
+
+            if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+                info!("OSV data for {} not modified since last sync", ecosystem);
+                continue;
+            }
+
             if !response.status().is_success() {
                 warn!(
                     "Failed to fetch OSV data for {}: {}",
@@ -82,6 +105,7 @@ impl AdvisorySource for OSVSource {
                 match serde_json::from_str::<Advisory>(&content) {
                     Ok(advisory) => advisories.push(advisory),
                     Err(e) => {
+                        // Try to parse as generic Value to see if we can salvage it or debug
                         warn!("Failed to parse OSV advisory in {}: {}", ecosystem, e);
                     }
                 }

@@ -1,3 +1,4 @@
+pub mod aggregator;
 pub mod config;
 pub mod manager;
 pub mod models;

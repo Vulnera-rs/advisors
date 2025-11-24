@@ -10,6 +10,7 @@ pub struct Advisory {
     pub references: Vec<Reference>,
     pub published: Option<DateTime<Utc>>,
     pub modified: Option<DateTime<Utc>>,
+    pub aliases: Option<Vec<String>>,
     pub database_specific: Option<serde_json::Value>,
 }
 

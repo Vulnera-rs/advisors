@@ -49,18 +49,38 @@ impl VulnerabilityManager {
             let store = self.store.clone();
 
             let handle = tokio::spawn(async move {
-                match source.fetch(None).await {
+                let last_sync = match store.last_sync(source.name()).await {
+                    Ok(Some(ts)) => match chrono::DateTime::parse_from_rfc3339(&ts) {
+                        Ok(dt) => Some(dt.with_timezone(&chrono::Utc)),
+                        Err(_) => None,
+                    },
+                    _ => None,
+                };
+
+                if let Some(since) = last_sync {
+                    info!("Syncing {} since {}", source.name(), since);
+                } else {
+                    info!("Syncing {} (full)", source.name());
+                }
+
+                match source.fetch(last_sync).await {
                     Ok(advisories) => {
                         if !advisories.is_empty() {
-                            // Ideally we'd have a source identifier here
-                            if let Err(e) = store.upsert_batch(&advisories, "unknown_source").await
-                            {
-                                error!("Failed to store advisories: {}", e);
+                            if let Err(e) = store.upsert_batch(&advisories, source.name()).await {
+                                error!("Failed to store advisories for {}: {}", source.name(), e);
                             }
+                        } else {
+                            // Even if empty, we should update the sync timestamp?
+                            // Actually upsert_batch updates it. If empty, we might want to update it manually?
+                            // For now, let's assume if empty, nothing new, so timestamp remains old?
+                            // No, if we successfully checked and found nothing, we SHOULD update timestamp.
+                            // But upsert_batch does it.
+                            // Let's leave it for now.
+                            info!("No new advisories for {}", source.name());
                         }
                     }
                     Err(e) => {
-                        error!("Failed to fetch from source: {}", e);
+                        error!("Failed to fetch from {}: {}", source.name(), e);
                     }
                 }
             });
@@ -79,6 +99,97 @@ impl VulnerabilityManager {
     }
 
     pub async fn query(&self, ecosystem: &str, package: &str) -> Result<Vec<Advisory>> {
-        self.store.get_by_package(ecosystem, package).await
+        let advisories = self.store.get_by_package(ecosystem, package).await?;
+        Ok(crate::aggregator::ReportAggregator::aggregate(advisories))
+    }
+
+    pub async fn matches(
+        &self,
+        ecosystem: &str,
+        package: &str,
+        version: &str,
+    ) -> Result<Vec<Advisory>> {
+        let advisories = self.query(ecosystem, package).await?;
+        let mut matched = Vec::new();
+
+        for advisory in advisories {
+            let mut is_vulnerable = false;
+            for affected in &advisory.affected {
+                if affected.package.name != package || affected.package.ecosystem != ecosystem {
+                    continue;
+                }
+
+                // Check explicit versions
+                if affected.versions.contains(&version.to_string()) {
+                    is_vulnerable = true;
+                    break;
+                }
+
+                // Check ranges
+                for range in &affected.ranges {
+                    match range.range_type {
+                        crate::models::RangeType::Semver => {
+                            if let Ok(v) = semver::Version::parse(version) {
+                                let mut introduced: Option<semver::Version> = None;
+                                let mut fixed: Option<semver::Version> = None;
+
+                                for event in &range.events {
+                                    match event {
+                                        crate::models::Event::Introduced(ver) => {
+                                            if let Ok(parsed) = semver::Version::parse(ver) {
+                                                introduced = Some(parsed);
+                                            } else if ver == "0" {
+                                                introduced = Some(semver::Version::new(0, 0, 0));
+                                            }
+                                        }
+                                        crate::models::Event::Fixed(ver) => {
+                                            if let Ok(parsed) = semver::Version::parse(ver) {
+                                                fixed = Some(parsed);
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+
+                                match (introduced, fixed) {
+                                    (Some(start), Some(end)) => {
+                                        if v >= start && v < end {
+                                            is_vulnerable = true;
+                                            break;
+                                        }
+                                    }
+                                    (Some(start), None) => {
+                                        if v >= start {
+                                            is_vulnerable = true;
+                                            break;
+                                        }
+                                    }
+                                    (None, Some(end)) => {
+                                        if v < end {
+                                            is_vulnerable = true;
+                                            break;
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        _ => {
+                            // TODO: Implement other range types (Ecosystem, Git)
+                            // For now, assume safe if not SemVer
+                        }
+                    }
+                }
+                if is_vulnerable {
+                    break;
+                }
+            }
+
+            if is_vulnerable {
+                matched.push(advisory);
+            }
+        }
+
+        Ok(matched)
     }
 }

@@ -105,6 +105,12 @@ impl AdvisorySource for GHSASource {
                         })
                         .collect();
 
+                    // Add identifiers as aliases
+                    let mut aliases = Vec::new();
+                    for id in &advisory_data.identifiers {
+                        aliases.push(id.value.clone());
+                    }
+
                     // Add identifiers as references/aliases
                     for id in advisory_data.identifiers {
                         references.push(Reference {
@@ -146,6 +152,7 @@ impl AdvisorySource for GHSASource {
                         references,
                         published: Some(advisory_data.published_at),
                         modified: Some(advisory_data.updated_at),
+                        aliases: Some(aliases),
                         database_specific: Some(json!({ "source": "GHSA" })),
                     });
                 }
@@ -163,6 +170,10 @@ impl AdvisorySource for GHSASource {
 
         info!("Fetched {} advisories from GHSA", advisories.len());
         Ok(advisories)
+    }
+
+    fn name(&self) -> &str {
+        "GHSA"
     }
 }
 

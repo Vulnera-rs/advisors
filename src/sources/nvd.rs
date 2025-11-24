@@ -48,17 +48,26 @@ impl NVDSource {
 
 #[async_trait]
 impl AdvisorySource for NVDSource {
-    async fn fetch(&self, _since: Option<DateTime<Utc>>) -> Result<Vec<Advisory>> {
+    async fn fetch(&self, since: Option<DateTime<Utc>>) -> Result<Vec<Advisory>> {
         let base_url = "https://services.nvd.nist.gov/rest/json/cves/2.0";
         let mut advisories = Vec::new();
         let mut start_index = 0;
         let results_per_page = 2000; // Max allowed by NVD
 
         loop {
-            let url = format!(
+            let mut url = format!(
                 "{}?startIndex={}&resultsPerPage={}",
                 base_url, start_index, results_per_page
             );
+
+            if let Some(since) = since {
+                let start = since.to_rfc3339();
+                let end = Utc::now().to_rfc3339();
+                url.push_str(&format!(
+                    "&lastModStartDate={}&lastModEndDate={}",
+                    start, end
+                ));
+            }
 
             // Wait for rate limiter
             self.limiter.until_ready().await;
@@ -159,6 +168,7 @@ impl AdvisorySource for NVDSource {
                     references,
                     published: Some(cve.published),
                     modified: Some(cve.last_modified),
+                    aliases: None,
                     database_specific: Some(serde_json::json!({
                         "source": "NVD",
                         "metrics": cve.metrics,
@@ -182,6 +192,10 @@ impl AdvisorySource for NVDSource {
         }
 
         Ok(advisories)
+    }
+
+    fn name(&self) -> &str {
+        "NVD"
     }
 }
 
