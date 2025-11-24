@@ -1,10 +1,16 @@
-# Vulnera Advisors
+# Vulnera Advisors: Open Source Vulnerability Intelligence
 
 [![Crates.io](https://img.shields.io/crates/v/vulnera-advisors.svg)](https://crates.io/crates/vulnera-advisors)
 [![Documentation](https://docs.rs/vulnera-advisors/badge.svg)](https://docs.rs/vulnera-advisors)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
+[![Made with love by Rust](https://img.shields.io/badge/Made%20with%20love-by%20Rust-red.svg)](https://www.rust-lang.org/)
+[![Open Source](https://img.shields.io/badge/Open%20Source-Vulnera-brightgreen.svg)](https://github.com/vulnera)
 
 A Rust library for aggregating and querying security vulnerability advisories from multiple sources. Designed for building vulnerability scanners, SCA tools, and security dashboards.
+
+## About Vulnera
+
+This project is an open source contribution from the Vulnera organization, dedicated to improving security tooling and vulnerability management. Vulnera provides security-focused libraries and tools to help developers build more secure applications.
 
 ## Features
 
@@ -14,11 +20,11 @@ A Rust library for aggregating and querying security vulnerability advisories fr
   - [Open Source Vulnerabilities (OSV)](https://osv.dev/) via bulk downloads
   - [CISA Known Exploited Vulnerabilities (KEV)](https://www.cisa.gov/known-exploited-vulnerabilities-catalog)
   - [OSS Index](https://ossindex.sonatype.org/) for on-demand PURL queries
-  
+
 - **Enrichment Data**:
   - [EPSS](https://www.first.org/epss/) (Exploit Prediction Scoring System) scores
   - KEV status for identifying actively exploited vulnerabilities
-  
+
 - **Unified Data Model**: All sources normalized to OSV-compatible Advisory format
 - **Efficient Storage**: Redis/DragonflyDB backend with zstd compression
 - **Version Matching**: SemVer-aware vulnerability matching
@@ -121,14 +127,14 @@ let vulns = manager.matches_with_options("npm", "lodash", "4.17.20", &options).a
 
 ## Environment Variables
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `REDIS_URL` | Redis/DragonflyDB connection URL | Yes |
-| `VULNERA__APIS__GHSA__TOKEN` | GitHub token for GHSA API | For GHSA |
-| `VULNERA__APIS__NVD__API_KEY` | NVD API key (higher rate limits) | Optional |
-| `OSSINDEX_USER` | OSS Index username | For OSS Index |
-| `OSSINDEX_TOKEN` | OSS Index API token | For OSS Index |
-| `VULNERA__STORE__TTL_SECONDS` | Advisory cache TTL | Optional |
+| Variable                      | Description                      | Required      |
+| ----------------------------- | -------------------------------- | ------------- |
+| `REDIS_URL`                   | Redis/DragonflyDB connection URL | Yes           |
+| `VULNERA__APIS__GHSA__TOKEN`  | GitHub token for GHSA API        | For GHSA      |
+| `VULNERA__APIS__NVD__API_KEY` | NVD API key (higher rate limits) | Optional      |
+| `OSSINDEX_USER`               | OSS Index username               | For OSS Index |
+| `OSSINDEX_TOKEN`              | OSS Index API token              | For OSS Index |
+| `VULNERA__STORE__TTL_SECONDS` | Advisory cache TTL               | Optional      |
 
 ## Supported Ecosystems
 
@@ -202,10 +208,27 @@ This project is licensed under the GNU General Public License v3.0 - see the [LI
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+This is an open source project from the Vulnera organization. We welcome contributions from the security community!
 
-## Related Projects
+### How to Contribute
 
-- [OSV](https://osv.dev/) - Open Source Vulnerabilities database
-- [Grype](https://github.com/anchore/grype) - Vulnerability scanner
-- [Trivy](https://github.com/aquasecurity/trivy) - Security scanner
+- Fork the repository
+- Create a feature branch
+- Submit a Pull Request with detailed description
+- Follow the existing code style and patterns
+- Add tests for new functionality
+
+### Security Contributions
+
+We particularly welcome contributions that:
+
+- Improve security coverage
+- Add new vulnerability sources
+- Enhance matching algorithms
+- Optimize performance for large-scale analysis
+
+## About Vulnera
+
+Vulnera is an organization dedicated to providing open source security tools and libraries that help developers build more secure applications. Our projects focus on making security accessible and actionable through practical, well-maintained tools.
+
+Our mission is to democratize security by providing high-quality, open source tools that can be easily integrated into development workflows.
