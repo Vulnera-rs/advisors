@@ -56,6 +56,7 @@ pub mod config;
 pub mod error;
 pub mod manager;
 pub mod models;
+pub mod purl;
 pub mod sources;
 pub mod store;
 
@@ -67,15 +68,18 @@ pub use models::{
     Advisory, Affected, Enrichment, Event, Package, Range, RangeType, Reference, ReferenceType,
     Severity,
 };
-pub use store::{AdvisoryStore, DragonflyStore, EnrichmentData, HealthStatus};
+pub use store::{AdvisoryStore, DragonflyStore, EnrichmentData, HealthStatus, OssIndexCache};
+
+// Re-export PURL helper
+pub use purl::{KNOWN_ECOSYSTEMS, Purl, PurlError, purl, purls_from_packages, purls_to_strings};
 
 // Re-export source types
 pub use sources::{
+    AdvisorySource,
     epss::{EpssScore, EpssSource},
     ghsa::GHSASource,
     kev::{KevEntry, KevSource},
     nvd::NVDSource,
-    ossindex::{OssIndexSource, OssVulnerability},
+    ossindex::{ComponentReport, OssIndexSource, OssVulnerability},
     osv::OSVSource,
-    AdvisorySource,
 };

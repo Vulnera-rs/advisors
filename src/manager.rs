@@ -3,13 +3,15 @@
 //! The [`VulnerabilityManager`] is the main entry point for using this crate.
 //! Use [`VulnerabilityManagerBuilder`] for flexible configuration.
 
-use crate::config::{Config, StoreConfig};
+use crate::config::{Config, OssIndexConfig, StoreConfig};
 use crate::error::{AdvisoryError, Result};
 use crate::models::{Advisory, Enrichment, Event, RangeType, Severity};
+use crate::purl::Purl;
 use crate::sources::epss::EpssSource;
 use crate::sources::kev::KevSource;
-use crate::sources::{ghsa::GHSASource, nvd::NVDSource, osv::OSVSource, AdvisorySource};
-use crate::store::{AdvisoryStore, DragonflyStore, EnrichmentData, HealthStatus};
+use crate::sources::ossindex::OssIndexSource;
+use crate::sources::{AdvisorySource, ghsa::GHSASource, nvd::NVDSource, osv::OSVSource};
+use crate::store::{AdvisoryStore, DragonflyStore, EnrichmentData, HealthStatus, OssIndexCache};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
@@ -98,6 +100,7 @@ pub struct VulnerabilityManagerBuilder {
     store_config: StoreConfig,
     sources: Vec<Arc<dyn AdvisorySource + Send + Sync>>,
     custom_store: Option<Arc<dyn AdvisoryStore + Send + Sync>>,
+    ossindex_source: Option<OssIndexSource>,
 }
 
 impl Default for VulnerabilityManagerBuilder {
@@ -114,6 +117,7 @@ impl VulnerabilityManagerBuilder {
             store_config: StoreConfig::default(),
             sources: Vec::new(),
             custom_store: None,
+            ossindex_source: None,
         }
     }
 
@@ -173,6 +177,22 @@ impl VulnerabilityManagerBuilder {
         ])
     }
 
+    /// Add the OSS Index source with optional configuration.
+    ///
+    /// OSS Index provides on-demand vulnerability queries by PURL.
+    /// If no config is provided, credentials are loaded from environment variables.
+    pub fn with_ossindex(mut self, config: Option<OssIndexConfig>) -> Self {
+        match OssIndexSource::new(config) {
+            Ok(source) => {
+                self.ossindex_source = Some(source);
+            }
+            Err(e) => {
+                warn!("Failed to configure OSS Index source: {}", e);
+            }
+        }
+        self
+    }
+
     /// Build the VulnerabilityManager.
     pub fn build(self) -> Result<VulnerabilityManager> {
         let store: Arc<dyn AdvisoryStore + Send + Sync> = match self.custom_store {
@@ -194,6 +214,7 @@ impl VulnerabilityManagerBuilder {
             sources: self.sources,
             kev_source: KevSource::new(),
             epss_source: EpssSource::new(),
+            ossindex_source: self.ossindex_source,
         })
     }
 }
@@ -204,6 +225,7 @@ pub struct VulnerabilityManager {
     sources: Vec<Arc<dyn AdvisorySource + Send + Sync>>,
     kev_source: KevSource,
     epss_source: EpssSource,
+    ossindex_source: Option<OssIndexSource>,
 }
 
 impl VulnerabilityManager {
@@ -224,6 +246,11 @@ impl VulnerabilityManager {
         // Add GHSA source if token is provided
         if let Some(token) = &config.ghsa_token {
             builder = builder.with_ghsa(token.clone());
+        }
+
+        // Add OSS Index source if configured
+        if config.ossindex.is_some() {
+            builder = builder.with_ossindex(config.ossindex.clone());
         }
 
         builder.build()
@@ -279,7 +306,11 @@ impl VulnerabilityManager {
                             info!("No new advisories for {}", source.name());
                             // Update sync timestamp even if no new advisories
                             if let Err(e) = store.update_sync_timestamp(source.name()).await {
-                                error!("Failed to update sync timestamp for {}: {}", source.name(), e);
+                                error!(
+                                    "Failed to update sync timestamp for {}: {}",
+                                    source.name(),
+                                    e
+                                );
                             }
                         }
                     }
@@ -611,5 +642,217 @@ impl VulnerabilityManager {
         // Fetch from source
         let entry = self.kev_source.is_kev(cve_id).await?;
         Ok(entry.is_some())
+    }
+
+    // === OSS Index Methods ===
+
+    /// Query OSS Index for vulnerabilities affecting the given PURLs.
+    ///
+    /// This method provides automatic caching:
+    /// - First checks the cache for each PURL
+    /// - Only queries OSS Index for cache misses
+    /// - Caches results for future queries
+    ///
+    /// # Arguments
+    ///
+    /// * `purls` - Package URLs to query (e.g., "pkg:npm/lodash@4.17.20")
+    ///
+    /// # Returns
+    ///
+    /// Vector of advisories for all vulnerabilities found.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if OSS Index is not configured or if the query fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use vulnera_advisors::{VulnerabilityManager, Purl};
+    ///
+    /// let manager = VulnerabilityManager::builder()
+    ///     .redis_url("redis://localhost:6379")
+    ///     .with_ossindex(None)
+    ///     .build()?;
+    ///
+    /// let purls = vec![
+    ///     Purl::new("npm", "lodash").with_version("4.17.20").to_string(),
+    /// ];
+    ///
+    /// let advisories = manager.query_ossindex(&purls).await?;
+    /// ```
+    pub async fn query_ossindex(&self, purls: &[String]) -> Result<Vec<Advisory>> {
+        let source = self.ossindex_source.as_ref().ok_or_else(|| {
+            AdvisoryError::config("OSS Index not configured. Use .with_ossindex() in builder.")
+        })?;
+
+        // Check cache for all PURLs
+        let mut cached_advisories = Vec::new();
+        let mut cache_misses = Vec::new();
+
+        for purl in purls {
+            let cache_key = Purl::cache_key_from_str(purl);
+            match self.store.get_ossindex_cache(&cache_key).await {
+                Ok(Some(cache)) if !cache.is_expired() => {
+                    debug!("OSS Index cache hit for {}", purl);
+                    cached_advisories.extend(cache.advisories);
+                }
+                _ => {
+                    debug!("OSS Index cache miss for {}", purl);
+                    cache_misses.push(purl.clone());
+                }
+            }
+        }
+
+        // Query OSS Index for cache misses
+        if !cache_misses.is_empty() {
+            debug!("Querying OSS Index for {} cache misses", cache_misses.len());
+            let fresh_advisories = source.query_advisories(&cache_misses).await.map_err(|e| {
+                AdvisoryError::SourceFetch {
+                    source_name: "ossindex".to_string(),
+                    message: e.to_string(),
+                }
+            })?;
+
+            // Group advisories by PURL for caching
+            let advisory_map = Self::group_advisories_by_purl(&cache_misses, &fresh_advisories);
+
+            // Cache results for each PURL
+            for (purl, advisories) in &advisory_map {
+                let cache_key = Purl::cache_key_from_str(purl);
+                let cache = OssIndexCache::new(advisories.clone());
+                if let Err(e) = self.store.store_ossindex_cache(&cache_key, &cache).await {
+                    debug!("Failed to cache OSS Index result for {}: {}", purl, e);
+                }
+            }
+
+            // Flatten and add to results
+            for advisories in advisory_map.into_values() {
+                cached_advisories.extend(advisories);
+            }
+        }
+
+        Ok(cached_advisories)
+    }
+
+    /// Query OSS Index for vulnerabilities with fallback to stored advisories.
+    ///
+    /// This method first queries OSS Index, then falls back to the local store
+    /// if the OSS Index query fails or returns no results.
+    ///
+    /// # Arguments
+    ///
+    /// * `packages` - List of packages to query (ecosystem, name, optional version)
+    ///
+    /// # Returns
+    ///
+    /// Map of package keys to their advisories.
+    pub async fn query_batch_with_ossindex(
+        &self,
+        packages: &[PackageKey],
+    ) -> Result<HashMap<PackageKey, Vec<Advisory>>> {
+        let mut results: HashMap<PackageKey, Vec<Advisory>> = HashMap::new();
+
+        // Build PURLs for packages that have versions
+        let (with_version, without_version): (Vec<_>, Vec<_>) =
+            packages.iter().partition(|p| p.version.is_some());
+
+        // Query OSS Index for packages with versions
+        if !with_version.is_empty() && self.ossindex_source.is_some() {
+            let purls: Vec<String> = with_version
+                .iter()
+                .map(|p| {
+                    Purl::new(&p.ecosystem, &p.name)
+                        .with_version(p.version.as_ref().unwrap())
+                        .to_string()
+                })
+                .collect();
+
+            match self.query_ossindex(&purls).await {
+                Ok(advisories) => {
+                    // Group advisories by package key
+                    for pkg in &with_version {
+                        let pkg_advisories: Vec<_> = advisories
+                            .iter()
+                            .filter(|a| {
+                                a.affected.iter().any(|aff| {
+                                    aff.package.ecosystem.eq_ignore_ascii_case(&pkg.ecosystem)
+                                        && aff.package.name == pkg.name
+                                })
+                            })
+                            .cloned()
+                            .collect();
+                        results.insert((*pkg).clone(), pkg_advisories);
+                    }
+                }
+                Err(e) => {
+                    warn!("OSS Index query failed, falling back to local store: {}", e);
+                    // Fallback to local store
+                    for pkg in &with_version {
+                        let advisories = if let Some(version) = &pkg.version {
+                            self.matches(&pkg.ecosystem, &pkg.name, version).await?
+                        } else {
+                            self.query(&pkg.ecosystem, &pkg.name).await?
+                        };
+                        results.insert((*pkg).clone(), advisories);
+                    }
+                }
+            }
+        }
+
+        // Query local store for packages without versions
+        for pkg in &without_version {
+            let advisories = self.query(&pkg.ecosystem, &pkg.name).await?;
+            results.insert((*pkg).clone(), advisories);
+        }
+
+        Ok(results)
+    }
+
+    /// Invalidate cached OSS Index results for specific PURLs.
+    ///
+    /// Use this to force a fresh query on the next call.
+    pub async fn invalidate_ossindex_cache(&self, purls: &[String]) -> Result<()> {
+        for purl in purls {
+            let cache_key = Purl::cache_key_from_str(purl);
+            self.store.invalidate_ossindex_cache(&cache_key).await?;
+        }
+        Ok(())
+    }
+
+    /// Invalidate all cached OSS Index results.
+    pub async fn invalidate_all_ossindex_cache(&self) -> Result<()> {
+        self.store.invalidate_all_ossindex_cache().await?;
+        Ok(())
+    }
+
+    /// Group advisories by their associated PURL.
+    fn group_advisories_by_purl(
+        purls: &[String],
+        advisories: &[Advisory],
+    ) -> HashMap<String, Vec<Advisory>> {
+        let mut map: HashMap<String, Vec<Advisory>> = HashMap::new();
+
+        // Initialize map with empty vectors for all PURLs
+        for purl in purls {
+            map.insert(purl.clone(), Vec::new());
+        }
+
+        // Group advisories
+        for advisory in advisories {
+            for affected in &advisory.affected {
+                // Find matching PURL
+                for purl in purls {
+                    if let Ok(parsed) = Purl::parse(purl) {
+                        if parsed.name == affected.package.name {
+                            map.entry(purl.clone()).or_default().push(advisory.clone());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        map
     }
 }

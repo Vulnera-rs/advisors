@@ -61,6 +61,25 @@ pub trait AdvisoryStore: Send + Sync {
 
     /// Get the count of stored advisories.
     async fn advisory_count(&self) -> Result<u64>;
+
+    /// Store an OSS Index component report in cache.
+    ///
+    /// # Arguments
+    ///
+    /// * `purl` - The Package URL that was queried
+    /// * `cache` - The cached component report with metadata
+    async fn store_ossindex_cache(&self, purl: &str, cache: &OssIndexCache) -> Result<()>;
+
+    /// Get a cached OSS Index component report.
+    ///
+    /// Returns `None` if not cached or if the cache has expired.
+    async fn get_ossindex_cache(&self, purl: &str) -> Result<Option<OssIndexCache>>;
+
+    /// Invalidate (delete) a cached OSS Index component report.
+    async fn invalidate_ossindex_cache(&self, purl: &str) -> Result<()>;
+
+    /// Invalidate all OSS Index cache entries.
+    async fn invalidate_all_ossindex_cache(&self) -> Result<u64>;
 }
 
 /// Health status of the store.
@@ -93,6 +112,60 @@ pub struct EnrichmentData {
     pub kev_ransomware: Option<bool>,
     /// Last updated timestamp.
     pub updated_at: String,
+}
+
+/// Cached OSS Index component report.
+///
+/// Stores advisories from OSS Index along with
+/// cache metadata for TTL management.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OssIndexCache {
+    /// The converted advisories from OSS Index.
+    pub advisories: Vec<crate::models::Advisory>,
+    /// When this was cached.
+    pub cached_at: chrono::DateTime<chrono::Utc>,
+    /// TTL in seconds from cache time.
+    pub ttl_seconds: u64,
+}
+
+/// Default cache TTL: 1 hour.
+const DEFAULT_OSSINDEX_CACHE_TTL: u64 = 3600;
+
+impl OssIndexCache {
+    /// Create a new cache entry with default TTL.
+    pub fn new(advisories: Vec<crate::models::Advisory>) -> Self {
+        Self {
+            advisories,
+            cached_at: chrono::Utc::now(),
+            ttl_seconds: DEFAULT_OSSINDEX_CACHE_TTL,
+        }
+    }
+
+    /// Create a new cache entry with custom TTL.
+    pub fn with_ttl(advisories: Vec<crate::models::Advisory>, ttl_seconds: u64) -> Self {
+        Self {
+            advisories,
+            cached_at: chrono::Utc::now(),
+            ttl_seconds,
+        }
+    }
+
+    /// Check if this cache entry is still valid (not expired).
+    pub fn is_valid(&self) -> bool {
+        !self.is_expired()
+    }
+
+    /// Check if this cache entry has expired.
+    pub fn is_expired(&self) -> bool {
+        let age = chrono::Utc::now().signed_duration_since(self.cached_at);
+        age.num_seconds() >= self.ttl_seconds as i64
+    }
+
+    /// Get the remaining TTL in seconds.
+    pub fn remaining_ttl(&self) -> i64 {
+        let age = chrono::Utc::now().signed_duration_since(self.cached_at);
+        (self.ttl_seconds as i64) - age.num_seconds()
+    }
 }
 
 /// Redis/DragonflyDB storage implementation.
@@ -415,5 +488,94 @@ impl AdvisoryStore for DragonflyStore {
         }
 
         Ok(count)
+    }
+
+    async fn store_ossindex_cache(&self, purl: &str, cache: &OssIndexCache) -> Result<()> {
+        let mut conn = self.get_connection().await?;
+        let key = self.key(&format!("ossidx:{}", Self::hash_purl(purl)));
+        let json = serde_json::to_string(cache)?;
+
+        // Use the remaining TTL or the configured TTL
+        let ttl = cache.remaining_ttl().max(1) as u64;
+        redis::cmd("SETEX")
+            .arg(&key)
+            .arg(ttl)
+            .arg(json)
+            .query_async::<()>(&mut conn)
+            .await?;
+
+        Ok(())
+    }
+
+    async fn get_ossindex_cache(&self, purl: &str) -> Result<Option<OssIndexCache>> {
+        let mut conn = self.get_connection().await?;
+        let key = self.key(&format!("ossidx:{}", Self::hash_purl(purl)));
+        let data: Option<String> = conn.get(&key).await?;
+
+        match data {
+            Some(json) => {
+                let cache: OssIndexCache = serde_json::from_str(&json)?;
+                // Double-check validity (Redis TTL should handle this, but be safe)
+                if cache.is_valid() {
+                    Ok(Some(cache))
+                } else {
+                    // Cache expired, delete it
+                    let _: () = conn.del(&key).await?;
+                    Ok(None)
+                }
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn invalidate_ossindex_cache(&self, purl: &str) -> Result<()> {
+        let mut conn = self.get_connection().await?;
+        let key = self.key(&format!("ossidx:{}", Self::hash_purl(purl)));
+        let _: () = conn.del(&key).await?;
+        Ok(())
+    }
+
+    async fn invalidate_all_ossindex_cache(&self) -> Result<u64> {
+        let mut conn = self.get_connection().await?;
+        let pattern = self.key("ossidx:*");
+
+        // Use SCAN to find all OSS Index cache keys
+        let mut deleted = 0u64;
+        let mut cursor = 0u64;
+
+        loop {
+            let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(&pattern)
+                .arg("COUNT")
+                .arg(1000)
+                .query_async(&mut conn)
+                .await?;
+
+            if !keys.is_empty() {
+                let count: u64 = redis::cmd("DEL").arg(&keys).query_async(&mut conn).await?;
+                deleted += count;
+            }
+
+            cursor = new_cursor;
+            if cursor == 0 {
+                break;
+            }
+        }
+
+        Ok(deleted)
+    }
+}
+
+impl DragonflyStore {
+    /// Generate a hash key for a PURL string.
+    fn hash_purl(purl: &str) -> String {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        purl.hash(&mut hasher);
+        format!("{:x}", hasher.finish())
     }
 }
