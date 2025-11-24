@@ -21,7 +21,7 @@ impl GHSASource {
 
 #[async_trait]
 impl AdvisorySource for GHSASource {
-    async fn fetch(&self, _since: Option<DateTime<Utc>>) -> Result<Vec<Advisory>> {
+    async fn fetch(&self, since: Option<DateTime<Utc>>) -> Result<Vec<Advisory>> {
         let client = reqwest::Client::new();
         let mut advisories = Vec::new();
         let mut cursor: Option<String> = None;
@@ -63,7 +63,8 @@ impl AdvisorySource for GHSASource {
             "#;
 
             let variables = json!({
-                "cursor": cursor
+                "cursor": cursor,
+                "updatedSince": since.map(|d| d.to_rfc3339()),
             });
 
             let response = client

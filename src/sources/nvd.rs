@@ -61,14 +61,35 @@ impl AdvisorySource for NVDSource {
             );
 
             if let Some(since) = since {
-                let start = since.to_rfc3339();
-                let end = Utc::now().to_rfc3339();
-                url.push_str(&format!(
-                    "&lastModStartDate={}&lastModEndDate={}",
-                    start, end
-                ));
-            }
+                // NVD has a 120-day maximum range restriction
+                let now = Utc::now();
+                let duration = now.signed_duration_since(since);
+                let max_days = 120;
 
+                if duration.num_days() > max_days {
+                    // If range exceeds 120 days, we need to chunk
+                    // For first implementation, just use last 120 days and log warning
+                    warn!(
+                        "NVD sync: Last sync was {} days ago (max: {}). Only fetching last {} days.",
+                        duration.num_days(),
+                        max_days,
+                        max_days
+                    );
+                    let start = now - chrono::Duration::days(max_days);
+                    url.push_str(&format!(
+                        "&lastModStartDate={}&lastModEndDate={}",
+                        start.to_rfc3339(),
+                        now.to_rfc3339()
+                    ));
+                } else {
+                    // Normal case: range is within limit
+                    url.push_str(&format!(
+                        "&lastModStartDate={}&lastModEndDate={}",
+                        since.to_rfc3339(),
+                        now.to_rfc3339()
+                    ));
+                }
+            }
             // Wait for rate limiter
             self.limiter.until_ready().await;
 
