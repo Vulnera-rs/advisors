@@ -1,6 +1,6 @@
 use super::AdvisorySource;
+use crate::error::Result;
 use crate::models::{Advisory, Reference, ReferenceType};
-use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use cpe::cpe::Cpe;
@@ -194,6 +194,7 @@ impl AdvisorySource for NVDSource {
                         "source": "NVD",
                         "metrics": cve.metrics,
                     })),
+                    enrichment: None,
                 });
             }
 

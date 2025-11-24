@@ -1,6 +1,6 @@
 use super::AdvisorySource;
+use crate::error::{AdvisoryError, Result};
 use crate::models::Advisory;
-use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use std::io::Read;
@@ -107,9 +107,9 @@ impl OSVSource {
 
         let response = client.get(&csv_url).send().await?;
         if !response.status().is_success() {
-            return Err(anyhow::anyhow!(
-                "Failed to fetch modified_id.csv: {}",
-                response.status()
+            return Err(AdvisoryError::source_fetch(
+                "OSV",
+                format!("Failed to fetch modified_id.csv: {}", response.status()),
             ));
         }
 
@@ -187,9 +187,9 @@ impl OSVSource {
 
         let response = client.get(&url).send().await?;
         if !response.status().is_success() {
-            return Err(anyhow::anyhow!(
-                "Failed to fetch ZIP: {}",
-                response.status()
+            return Err(AdvisoryError::source_fetch(
+                "OSV",
+                format!("Failed to fetch ZIP: {}", response.status()),
             ));
         }
 

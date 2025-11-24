@@ -13,3 +13,4 @@ target
 # Contains mutation testing data
 **/mutants.out*/
 
+.github/copilot-instructions.md

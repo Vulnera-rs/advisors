@@ -1,8 +1,8 @@
 use super::AdvisorySource;
+use crate::error::Result;
 use crate::models::{
     Advisory, Affected, Event, Package, Range, RangeType, Reference, ReferenceType,
 };
-use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -155,6 +155,7 @@ impl AdvisorySource for GHSASource {
                         modified: Some(advisory_data.updated_at),
                         aliases: Some(aliases),
                         database_specific: Some(json!({ "source": "GHSA" })),
+                        enrichment: None,
                     });
                 }
 
