@@ -18,9 +18,11 @@ pub struct Advisory {
     pub summary: Option<String>,
     /// Detailed description of the vulnerability.
     pub details: Option<String>,
-    /// List of affected packages and version ranges.
+    /// List of affected packages and version ranges. Optional per OSV schema.
+    #[serde(default)]
     pub affected: Vec<Affected>,
-    /// References to external resources (advisories, patches, etc.).
+    /// References to external resources (advisories, patches, etc.). Optional per OSV schema.
+    #[serde(default)]
     pub references: Vec<Reference>,
     /// When the advisory was first published.
     pub published: Option<DateTime<Utc>>,
@@ -75,7 +77,11 @@ pub struct Enrichment {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Affected {
     pub package: Package,
+    /// Version ranges affected (e.g., semver ranges).
+    #[serde(default)]
     pub ranges: Vec<Range>,
+    /// Explicit list of affected versions. Optional per OSV schema.
+    #[serde(default)]
     pub versions: Vec<String>,
     pub ecosystem_specific: Option<serde_json::Value>,
     pub database_specific: Option<serde_json::Value>,
@@ -120,16 +126,25 @@ pub struct Reference {
     pub url: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Reference types as defined in the OSV schema.
+/// Uses `#[serde(other)]` to gracefully handle unknown variants.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum ReferenceType {
     Advisory,
     Article,
-    Report,
+    Detection,
+    Discussion,
+    Evidence,
     Fix,
     Git,
+    Introduced,
     Package,
+    Report,
     Web,
+    /// Fallback for unknown/future reference types.
+    #[default]
+    #[serde(other)]
     Other,
 }
 

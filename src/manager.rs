@@ -299,12 +299,35 @@ impl VulnerabilityManager {
                 match source.fetch(last_sync).await {
                     Ok(advisories) => {
                         if !advisories.is_empty() {
-                            if let Err(e) = store.upsert_batch(&advisories, source.name()).await {
-                                error!("Failed to store advisories for {}: {}", source.name(), e);
+                            match store.upsert_batch(&advisories, source.name()).await {
+                                Ok(_) => {
+                                    info!(
+                                        "Successfully synced {} advisories from {}",
+                                        advisories.len(),
+                                        source.name()
+                                    );
+                                    // Update timestamp only after successful storage
+                                    if let Err(e) = store.update_sync_timestamp(source.name()).await
+                                    {
+                                        error!(
+                                            "Failed to update sync timestamp for {}: {}",
+                                            source.name(),
+                                            e
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "Failed to store advisories for {}: {}",
+                                        source.name(),
+                                        e
+                                    );
+                                    // Do NOT update timestamp on storage failure
+                                }
                             }
                         } else {
                             info!("No new advisories for {}", source.name());
-                            // Update sync timestamp even if no new advisories
+                            // Update sync timestamp even if no new advisories (successful check)
                             if let Err(e) = store.update_sync_timestamp(source.name()).await {
                                 error!(
                                     "Failed to update sync timestamp for {}: {}",
@@ -316,6 +339,7 @@ impl VulnerabilityManager {
                     }
                     Err(e) => {
                         error!("Failed to fetch from {}: {}", source.name(), e);
+                        // Do NOT update timestamp on fetch failure
                     }
                 }
             });
@@ -330,6 +354,21 @@ impl VulnerabilityManager {
         }
 
         info!("Sync completed.");
+        Ok(())
+    }
+
+    /// Reset the sync timestamp for a specific source.
+    ///
+    /// This forces a full re-sync on the next `sync_all()` call.
+    pub async fn reset_sync(&self, source: &str) -> Result<()> {
+        self.store.reset_sync_timestamp(source).await
+    }
+
+    /// Reset all sync timestamps, forcing a full re-sync of all sources.
+    pub async fn reset_all_syncs(&self) -> Result<()> {
+        for source in &self.sources {
+            self.store.reset_sync_timestamp(source.name()).await?;
+        }
         Ok(())
     }
 
@@ -377,23 +416,91 @@ impl VulnerabilityManager {
         Ok(advisories)
     }
 
-    /// Query multiple packages in a batch.
+    /// Query multiple packages in a batch (concurrent).
+    ///
+    /// All queries run in parallel for maximum throughput.
     pub async fn query_batch(
         &self,
         packages: &[PackageKey],
     ) -> Result<HashMap<PackageKey, Vec<Advisory>>> {
-        let mut results = HashMap::new();
+        use futures_util::future::join_all;
 
-        for pkg in packages {
-            let advisories = if let Some(version) = &pkg.version {
-                self.matches(&pkg.ecosystem, &pkg.name, version).await?
-            } else {
-                self.query(&pkg.ecosystem, &pkg.name).await?
-            };
-            results.insert(pkg.clone(), advisories);
+        let tasks: Vec<_> = packages
+            .iter()
+            .map(|pkg| {
+                let pkg = pkg.clone();
+                let ecosystem = pkg.ecosystem.clone();
+                let name = pkg.name.clone();
+                let version = pkg.version.clone();
+                let store = self.store.clone();
+
+                async move {
+                    let advisories = if let Some(ver) = &version {
+                        // For version matching, we need the full logic
+                        let all = store.get_by_package(&ecosystem, &name).await?;
+                        let aggregated = crate::aggregator::ReportAggregator::aggregate(all);
+                        Self::filter_by_version(aggregated, &ecosystem, &name, ver)
+                    } else {
+                        let all = store.get_by_package(&ecosystem, &name).await?;
+                        crate::aggregator::ReportAggregator::aggregate(all)
+                    };
+                    Ok::<_, crate::error::AdvisoryError>((pkg, advisories))
+                }
+            })
+            .collect();
+
+        let results: Vec<_> = join_all(tasks).await;
+
+        let mut map = HashMap::new();
+        for result in results {
+            match result {
+                Ok((pkg, advisories)) => {
+                    map.insert(pkg, advisories);
+                }
+                Err(e) => {
+                    warn!("Batch query error: {}", e);
+                }
+            }
         }
 
-        Ok(results)
+        Ok(map)
+    }
+
+    /// Filter advisories by version (static helper for concurrent batch queries)
+    fn filter_by_version(
+        advisories: Vec<Advisory>,
+        ecosystem: &str,
+        package: &str,
+        version: &str,
+    ) -> Vec<Advisory> {
+        advisories
+            .into_iter()
+            .filter(|advisory| {
+                for affected in &advisory.affected {
+                    if affected.package.name != package || affected.package.ecosystem != ecosystem {
+                        continue;
+                    }
+
+                    // Check explicit versions
+                    if affected.versions.contains(&version.to_string()) {
+                        return true;
+                    }
+
+                    // Check ranges
+                    for range in &affected.ranges {
+                        match range.range_type {
+                            RangeType::Semver | RangeType::Ecosystem => {
+                                if Self::matches_semver_range(version, &range.events) {
+                                    return true;
+                                }
+                            }
+                            RangeType::Git => {}
+                        }
+                    }
+                }
+                false
+            })
+            .collect()
     }
 
     /// Check if a specific package version is affected by any vulnerabilities.

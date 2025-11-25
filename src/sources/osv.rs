@@ -3,16 +3,46 @@ use crate::error::{AdvisoryError, Result};
 use crate::models::Advisory;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
+use reqwest_retry::{RetryTransientMiddleware, policies::ExponentialBackoff};
 use std::io::Read;
-use tracing::{info, warn};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::Semaphore;
+use tracing::{debug, info, warn};
+
+/// Maximum concurrent ecosystem syncs
+const MAX_CONCURRENT_ECOSYSTEMS: usize = 4;
+/// Maximum concurrent individual advisory fetches (incremental sync)
+const MAX_CONCURRENT_ADVISORY_FETCHES: usize = 20;
+/// Request timeout for individual requests
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+/// Connection timeout
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct OSVSource {
     ecosystems: Vec<String>,
+    client: ClientWithMiddleware,
+    /// Raw client for operations that need direct reqwest (like streaming ZIPs)
+    raw_client: reqwest::Client,
 }
 
 impl OSVSource {
     pub fn new(ecosystems: Vec<String>) -> Self {
-        Self { ecosystems }
+        let raw_client = reqwest::Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .connect_timeout(CONNECT_TIMEOUT)
+            .pool_max_idle_per_host(10)
+            .build()
+            .unwrap_or_default();
+        
+        // Retry policy: 3 retries with exponential backoff
+        let retry_policy = ExponentialBackoff::builder().build_with_max_retries(3);
+        let client = ClientBuilder::new(raw_client.clone())
+            .with(RetryTransientMiddleware::new_with_policy(retry_policy))
+            .build();
+        
+        Self { ecosystems, client, raw_client }
     }
 }
 
@@ -30,13 +60,10 @@ impl AdvisorySource for OSVSource {
 
 impl OSVSource {
     async fn fetch_internal(&self, since: Option<DateTime<Utc>>) -> Result<Vec<Advisory>> {
-        let mut advisories = Vec::new();
-        let client = reqwest::Client::new();
-
         let ecosystems = if self.ecosystems.is_empty() {
             info!("No ecosystems specified, fetching list from OSV...");
             let url = "https://osv-vulnerabilities.storage.googleapis.com/ecosystems.txt";
-            let response = client.get(url).send().await?;
+            let response = self.client.get(url).send().await?;
             if !response.status().is_success() {
                 warn!("Failed to fetch ecosystems list: {}", response.status());
                 return Ok(vec![]);
@@ -47,55 +74,94 @@ impl OSVSource {
             self.ecosystems.clone()
         };
 
-        for ecosystem in &ecosystems {
-            // Try incremental sync first if we have a timestamp
-            if let Some(cutoff) = since {
-                info!(
-                    "Attempting incremental sync for {} since {}",
-                    ecosystem, cutoff
-                );
-                match self.fetch_incremental(&client, ecosystem, cutoff).await {
-                    Ok(mut incremental_advisories) => {
-                        info!(
-                            "Incremental sync for {}: {} advisories",
-                            ecosystem,
-                            incremental_advisories.len()
-                        );
-                        advisories.append(&mut incremental_advisories);
-                        continue; // Skip full sync for this ecosystem
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Incremental sync failed for {}, falling back to full sync: {}",
-                            ecosystem, e
-                        );
-                        // Fall through to full sync
-                    }
-                }
-            }
+        // Process ecosystems concurrently with a semaphore to limit parallelism
+        let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_ECOSYSTEMS));
+        // Use raw_client for ecosystem fetches (streaming ZIP downloads)
+        let client = self.raw_client.clone();
+        
+        let tasks: Vec<_> = ecosystems
+            .into_iter()
+            .map(|ecosystem| {
+                let sem = semaphore.clone();
+                let client = client.clone();
+                let since = since;
+                
+                tokio::spawn(async move {
+                    let _permit = sem.acquire().await.expect("semaphore closed");
+                    Self::fetch_ecosystem(&client, &ecosystem, since).await
+                })
+            })
+            .collect();
 
-            // Full sync: download entire ZIP
-            info!("Performing full sync for {}", ecosystem);
-            match self.fetch_full(&client, ecosystem).await {
-                Ok(mut full_advisories) => {
-                    info!(
-                        "Full sync for {}: {} advisories",
-                        ecosystem,
-                        full_advisories.len()
-                    );
-                    advisories.append(&mut full_advisories);
+        // Collect results from all tasks
+        let mut all_advisories = Vec::new();
+        for task in tasks {
+            match task.await {
+                Ok(Ok(advisories)) => {
+                    all_advisories.extend(advisories);
+                }
+                Ok(Err(e)) => {
+                    warn!("Ecosystem fetch error: {}", e);
                 }
                 Err(e) => {
-                    warn!("Failed to fetch OSV data for {}: {}", ecosystem, e);
+                    warn!("Task join error: {}", e);
                 }
             }
         }
 
-        Ok(advisories)
+        Ok(all_advisories)
     }
 
+    /// Fetch advisories for a single ecosystem
+    async fn fetch_ecosystem(
+        client: &reqwest::Client,
+        ecosystem: &str,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<Vec<Advisory>> {
+        // Try incremental sync first if we have a timestamp
+        if let Some(cutoff) = since {
+            info!(
+                "Attempting incremental sync for {} since {}",
+                ecosystem, cutoff
+            );
+            match Self::fetch_incremental(client, ecosystem, cutoff).await {
+                Ok(advisories) => {
+                    info!(
+                        "Incremental sync for {}: {} advisories",
+                        ecosystem,
+                        advisories.len()
+                    );
+                    return Ok(advisories);
+                }
+                Err(e) => {
+                    warn!(
+                        "Incremental sync failed for {}, falling back to full sync: {}",
+                        ecosystem, e
+                    );
+                }
+            }
+        }
+
+        // Full sync: download entire ZIP
+        info!("Performing full sync for {}", ecosystem);
+        match Self::fetch_full(client, ecosystem).await {
+            Ok(advisories) => {
+                info!(
+                    "Full sync for {}: {} advisories",
+                    ecosystem,
+                    advisories.len()
+                );
+                Ok(advisories)
+            }
+            Err(e) => {
+                warn!("Failed to fetch OSV data for {}: {}", ecosystem, e);
+                Ok(vec![])
+            }
+        }
+    }
+
+    /// Fetch changed advisories incrementally using the modified_id.csv
     async fn fetch_incremental(
-        &self,
         client: &reqwest::Client,
         ecosystem: &str,
         since: DateTime<Utc>,
@@ -152,34 +218,65 @@ impl OSVSource {
             ecosystem
         );
 
-        // Download individual JSONs for changed IDs
-        let mut advisories = Vec::new();
-        for id in changed_ids {
-            let json_url = format!(
-                "https://osv-vulnerabilities.storage.googleapis.com/{}/{}.json",
-                ecosystem, id
-            );
+        if changed_ids.is_empty() {
+            return Ok(vec![]);
+        }
 
-            match client.get(&json_url).send().await {
-                Ok(response) if response.status().is_success() => {
-                    match response.json::<Advisory>().await {
-                        Ok(advisory) => advisories.push(advisory),
-                        Err(e) => warn!("Failed to parse advisory {}: {}", id, e),
+        // Download individual JSONs concurrently with rate limiting
+        let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_ADVISORY_FETCHES));
+        let client = client.clone();
+        let ecosystem = ecosystem.to_string();
+        
+        let tasks: Vec<_> = changed_ids
+            .into_iter()
+            .map(|id| {
+                let sem = semaphore.clone();
+                let client = client.clone();
+                let ecosystem = ecosystem.clone();
+                
+                tokio::spawn(async move {
+                    let _permit = sem.acquire().await.expect("semaphore closed");
+                    let json_url = format!(
+                        "https://osv-vulnerabilities.storage.googleapis.com/{}/{}.json",
+                        ecosystem, id
+                    );
+
+                    match client.get(&json_url).send().await {
+                        Ok(response) if response.status().is_success() => {
+                            match response.json::<Advisory>().await {
+                                Ok(advisory) => Some(advisory),
+                                Err(e) => {
+                                    debug!("Failed to parse advisory {}: {}", id, e);
+                                    None
+                                }
+                            }
+                        }
+                        Ok(response) => {
+                            debug!("Failed to fetch advisory {}: {}", id, response.status());
+                            None
+                        }
+                        Err(e) => {
+                            debug!("Network error fetching advisory {}: {}", id, e);
+                            None
+                        }
                     }
-                }
-                Ok(response) => {
-                    warn!("Failed to fetch advisory {}: {}", id, response.status());
-                }
-                Err(e) => {
-                    warn!("Network error fetching advisory {}: {}", id, e);
-                }
+                })
+            })
+            .collect();
+
+        // Collect results
+        let mut advisories = Vec::with_capacity(tasks.len());
+        for task in tasks {
+            if let Ok(Some(advisory)) = task.await {
+                advisories.push(advisory);
             }
         }
 
         Ok(advisories)
     }
 
-    async fn fetch_full(&self, client: &reqwest::Client, ecosystem: &str) -> Result<Vec<Advisory>> {
+    /// Fetch all advisories from the ecosystem ZIP file
+    async fn fetch_full(client: &reqwest::Client, ecosystem: &str) -> Result<Vec<Advisory>> {
         let url = format!(
             "https://osv-vulnerabilities.storage.googleapis.com/{}/all.zip",
             ecosystem
@@ -193,23 +290,27 @@ impl OSVSource {
             ));
         }
 
-        // Create a temporary file
-        let mut tmp_file = tempfile::tempfile()?;
-        let mut content = response.bytes_stream();
+        // Stream download to memory (ZIPs are usually <50MB compressed)
+        let bytes = response.bytes().await?;
+        let ecosystem = ecosystem.to_string();
+        
+        // Parse ZIP in a blocking task to avoid blocking the async runtime
+        let advisories = tokio::task::spawn_blocking(move || {
+            Self::parse_zip_sync(&bytes, &ecosystem)
+        })
+        .await
+        .map_err(|e| AdvisoryError::source_fetch("OSV", format!("Task join error: {}", e)))??;
 
-        // Stream download to file
-        use futures_util::StreamExt;
-        while let Some(chunk) = content.next().await {
-            let chunk = chunk?;
-            std::io::Write::write_all(&mut tmp_file, &chunk)?;
-        }
+        Ok(advisories)
+    }
 
-        // Rewind file for reading
-        use std::io::Seek;
-        tmp_file.seek(std::io::SeekFrom::Start(0))?;
-
-        let mut zip = zip::ZipArchive::new(tmp_file)?;
-        let mut advisories = Vec::new();
+    /// Synchronous ZIP parsing (runs in spawn_blocking)
+    fn parse_zip_sync(bytes: &[u8], ecosystem: &str) -> Result<Vec<Advisory>> {
+        use std::io::Cursor;
+        
+        let reader = Cursor::new(bytes);
+        let mut zip = zip::ZipArchive::new(reader)?;
+        let mut advisories = Vec::with_capacity(zip.len());
 
         for i in 0..zip.len() {
             let mut file = zip.by_index(i)?;
@@ -223,7 +324,9 @@ impl OSVSource {
             match serde_json::from_str::<Advisory>(&content) {
                 Ok(advisory) => advisories.push(advisory),
                 Err(e) => {
-                    warn!("Failed to parse OSV advisory in {}: {}", ecosystem, e);
+                    // Use eprintln since we're in a blocking context
+                    // In production, you'd want structured logging
+                    eprintln!("WARN: Failed to parse OSV advisory in {}: {}", ecosystem, e);
                 }
             }
         }

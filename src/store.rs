@@ -59,6 +59,9 @@ pub trait AdvisoryStore: Send + Sync {
     /// Update the last sync timestamp for a source.
     async fn update_sync_timestamp(&self, source: &str) -> Result<()>;
 
+    /// Reset (delete) the sync timestamp for a source, forcing a full re-sync.
+    async fn reset_sync_timestamp(&self, source: &str) -> Result<()>;
+
     /// Get the count of stored advisories.
     async fn advisory_count(&self) -> Result<u64>;
 
@@ -250,11 +253,8 @@ impl AdvisoryStore for DragonflyStore {
             }
         }
 
-        // Update meta
-        pipe.set(
-            self.key(&format!("meta:{}", source)),
-            chrono::Utc::now().to_rfc3339(),
-        );
+        // NOTE: Do NOT update meta timestamp here.
+        // The caller (sync_all) will update it explicitly after verifying success.
 
         pipe.query_async::<()>(&mut conn).await?;
         info!("Upserted {} advisories from {}", advisories.len(), source);
@@ -456,6 +456,13 @@ impl AdvisoryStore for DragonflyStore {
                 chrono::Utc::now().to_rfc3339(),
             )
             .await?;
+        Ok(())
+    }
+
+    async fn reset_sync_timestamp(&self, source: &str) -> Result<()> {
+        let mut conn = self.get_connection().await?;
+        let _: () = conn.del(self.key(&format!("meta:{}", source))).await?;
+        info!("Reset sync timestamp for {}", source);
         Ok(())
     }
 

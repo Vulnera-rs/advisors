@@ -48,6 +48,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::env;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Semaphore;
 use tracing::{debug, warn};
 
@@ -56,6 +57,12 @@ const MAX_BATCH_SIZE: usize = 128;
 
 /// Default concurrent request limit.
 const DEFAULT_CONCURRENCY: usize = 4;
+
+/// Request timeout
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Connection timeout
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// OSS Index API base URL.
 const API_BASE_URL: &str = "https://ossindex.sonatype.org/api/v3";
@@ -118,8 +125,14 @@ impl OssIndexSource {
     pub fn new(config: Option<OssIndexConfig>) -> Result<Self> {
         let config = config.unwrap_or_else(Self::config_from_env);
 
+        let raw_client = Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .connect_timeout(CONNECT_TIMEOUT)
+            .build()
+            .unwrap_or_default();
+        
         let retry_policy = ExponentialBackoff::builder().build_with_max_retries(3);
-        let client = ClientBuilder::new(Client::new())
+        let client = ClientBuilder::new(raw_client)
             .with(RetryTransientMiddleware::new_with_policy(retry_policy))
             .build();
 

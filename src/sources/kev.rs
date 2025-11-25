@@ -11,13 +11,21 @@
 
 use crate::error::{AdvisoryError, Result};
 use chrono::{DateTime, NaiveDate, Utc};
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
+use reqwest_retry::{RetryTransientMiddleware, policies::ExponentialBackoff};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::time::Duration;
 use tracing::{debug, info};
 
 /// URL for the CISA KEV JSON feed.
 pub const KEV_URL: &str =
     "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json";
+
+/// Request timeout
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Connection timeout  
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// CISA KEV data source.
 ///
@@ -25,15 +33,25 @@ pub const KEV_URL: &str =
 /// enrichment data for advisories. Unlike other sources, KEV doesn't create new
 /// advisories but enriches existing ones with exploitation status.
 pub struct KevSource {
-    client: reqwest::Client,
+    client: ClientWithMiddleware,
 }
 
 impl KevSource {
     /// Create a new KEV source.
     pub fn new() -> Self {
-        Self {
-            client: reqwest::Client::new(),
-        }
+        let raw_client = reqwest::Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .connect_timeout(CONNECT_TIMEOUT)
+            .build()
+            .unwrap_or_default();
+
+        // Retry policy: 3 retries with exponential backoff
+        let retry_policy = ExponentialBackoff::builder().build_with_max_retries(3);
+        let client = ClientBuilder::new(raw_client)
+            .with(RetryTransientMiddleware::new_with_policy(retry_policy))
+            .build();
+
+        Self { client }
     }
 
     /// Fetch the entire KEV catalog.

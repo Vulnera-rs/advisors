@@ -2,7 +2,7 @@ use super::AdvisorySource;
 use crate::error::Result;
 use crate::models::{Advisory, Reference, ReferenceType};
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use cpe::cpe::Cpe;
 use governor::clock::DefaultClock;
 use governor::middleware::NoOpMiddleware;
@@ -10,22 +10,67 @@ use governor::state::{InMemoryState, NotKeyed};
 use governor::{Quota, RateLimiter};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::{RetryTransientMiddleware, policies::ExponentialBackoff};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use tracing::{info, warn};
+
+/// Custom deserializer for NVD datetime format (e.g., "2024-01-15T10:30:00.000")
+fn deserialize_nvd_datetime<'de, D>(deserializer: D) -> std::result::Result<DateTime<Utc>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+
+    // O1
+    if let Ok(naive) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S%.3f") {
+        return Ok(naive.and_utc());
+    }
+
+    // O2
+    if let Ok(naive) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S") {
+        return Ok(naive.and_utc());
+    }
+
+    // O3
+    if let Ok(dt) = DateTime::parse_from_rfc3339(&s) {
+        return Ok(dt.with_timezone(&Utc));
+    }
+
+    Err(serde::de::Error::custom(format!(
+        "Failed to parse NVD datetime: {}",
+        s
+    )))
+}
 
 pub struct NVDSource {
     api_key: Option<String>,
     client: ClientWithMiddleware,
     limiter: Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock, NoOpMiddleware>>,
+    /// Maximum number of CVEs to fetch (None = unlimited)
+    max_results: Option<u32>,
 }
 
 impl NVDSource {
     pub fn new(api_key: Option<String>) -> Self {
-        // Retry policy
+        Self::with_max_results(api_key, None)
+    }
+
+    /// Create a new NVD source with a maximum result limit.
+    ///
+    /// Use `None` for unlimited results (will fetch all ~320k CVEs on full sync).
+    /// Use `Some(n)` to limit to n results (useful for testing).
+    pub fn with_max_results(api_key: Option<String>, max_results: Option<u32>) -> Self {
+        // Build raw client with timeout
+        let raw_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_default();
+
+        // Retry policy: 3 retries with exponential backoff
         let retry_policy = ExponentialBackoff::builder().build_with_max_retries(3);
-        let client = ClientBuilder::new(reqwest::Client::new())
+        let client = ClientBuilder::new(raw_client)
             .with(RetryTransientMiddleware::new_with_policy(retry_policy))
             .build();
 
@@ -42,6 +87,7 @@ impl NVDSource {
             api_key,
             client,
             limiter,
+            max_results,
         }
     }
 }
@@ -66,6 +112,11 @@ impl AdvisorySource for NVDSource {
                 let duration = now.signed_duration_since(since);
                 let max_days = 120;
 
+                // NVD requires ISO 8601 format: YYYY-MM-DDTHH:MM:SS.sss
+                let format_nvd_date = |dt: DateTime<Utc>| -> String {
+                    dt.format("%Y-%m-%dT%H:%M:%S%.3f").to_string()
+                };
+
                 if duration.num_days() > max_days {
                     // If range exceeds 120 days, we need to chunk
                     // For first implementation, just use last 120 days and log warning
@@ -78,15 +129,15 @@ impl AdvisorySource for NVDSource {
                     let start = now - chrono::Duration::days(max_days);
                     url.push_str(&format!(
                         "&lastModStartDate={}&lastModEndDate={}",
-                        start.to_rfc3339(),
-                        now.to_rfc3339()
+                        format_nvd_date(start),
+                        format_nvd_date(now)
                     ));
                 } else {
                     // Normal case: range is within limit
                     url.push_str(&format!(
                         "&lastModStartDate={}&lastModEndDate={}",
-                        since.to_rfc3339(),
-                        now.to_rfc3339()
+                        format_nvd_date(since),
+                        format_nvd_date(now)
                     ));
                 }
             }
@@ -102,9 +153,16 @@ impl AdvisorySource for NVDSource {
 
             let response = request.send().await?;
             if !response.status().is_success() {
-                warn!("Failed to fetch NVD data: {}", response.status());
-                // If 403 or 404, maybe stop? For now, break to avoid infinite loop on error
-                break;
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                return Err(crate::error::AdvisoryError::source_fetch(
+                    "NVD",
+                    format!(
+                        "HTTP {}: {}",
+                        status,
+                        body.chars().take(200).collect::<String>()
+                    ),
+                ));
             }
 
             let nvd_response: NvdResponse = response.json().await?;
@@ -203,13 +261,15 @@ impl AdvisorySource for NVDSource {
                 break;
             }
 
-            // Safety break for scaffold to avoid downloading 200k+ CVEs
-            if start_index > 2000 {
-                info!(
-                    "Stopping NVD sync early for scaffold safety (fetched {} items)",
-                    start_index
-                );
-                break;
+            // Optional limit on results (useful for testing or incremental loading)
+            if let Some(max) = self.max_results {
+                if start_index >= max {
+                    info!(
+                        "Stopping NVD sync at configured limit (fetched {} of {} items)",
+                        start_index, total_results
+                    );
+                    break;
+                }
             }
         }
 
@@ -223,8 +283,8 @@ impl AdvisorySource for NVDSource {
 
 // Minimal NVD Structs
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct NvdResponse {
-    #[serde(rename = "totalResults")]
     total_results: u32,
     vulnerabilities: Vec<NvdItem>,
 }
@@ -235,17 +295,21 @@ struct NvdItem {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Cve {
     id: String,
+    #[serde(deserialize_with = "deserialize_nvd_datetime")]
     published: DateTime<Utc>,
-    #[serde(rename = "lastModified")]
+    #[serde(deserialize_with = "deserialize_nvd_datetime")]
     last_modified: DateTime<Utc>,
     descriptions: Vec<Description>,
+    #[serde(default)]
     references: Vec<NvdReference>,
     #[serde(default)]
     metrics: serde_json::Value,
     #[serde(default)]
     configurations: Option<Vec<Configuration>>,
+    // Ignored fields: cveTags, sourceIdentifier, vulnStatus, weaknesses
 }
 
 #[derive(Deserialize)]
@@ -254,9 +318,10 @@ struct Configuration {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Node {
-    #[serde(rename = "cpeMatch")]
     cpe_match: Vec<CpeMatch>,
+    // Ignored: negate, operator
 }
 
 #[derive(Deserialize)]
