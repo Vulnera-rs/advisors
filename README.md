@@ -1,10 +1,10 @@
 # Vulnera Advisors: Open Source Vulnerability Intelligence
 
-[![Crates.io](https://img.shields.io/crates/v/vulnera-advisors.svg)](https://crates.io/crates/vulnera-advisors)
-[![Documentation](https://docs.rs/vulnera-advisors/badge.svg)](https://docs.rs/vulnera-advisors)
+[![Crates.io](https://img.shields.io/crates/v/vulnera-advisors.svg)](https://crates.io/crates/vulnera-advisor)
+[![Documentation](https://docs.rs/vulnera-advisors/badge.svg)](https://docs.rs/vulnera-advisor)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 [![Made with love by Rust](https://img.shields.io/badge/Made%20with%20love-by%20Rust-red.svg)](https://www.rust-lang.org/)
-[![Open Source](https://img.shields.io/badge/Open%20Source-Vulnera-brightgreen.svg)](https://github.com/vulnera)
+[![Open Source](https://img.shields.io/badge/Open%20Source-Vulnera-brightgreen.svg)](https://github.com/vulnera-rs)
 
 A Rust library for aggregating and querying security vulnerability advisories from multiple sources. Designed for building vulnerability scanners, SCA tools, and security dashboards.
 
