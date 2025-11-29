@@ -181,10 +181,6 @@ impl AdvisorySource for NVDSource {
                             for cpe_match in node.cpe_match {
                                 if cpe_match.vulnerable {
                                     if let Ok(cpe_uri) = cpe::uri::Uri::parse(&cpe_match.criteria) {
-                                        // Heuristic: Try to map CPE to PURL
-                                        // This is imperfect. NVD doesn't tell us the package manager.
-                                        // We'll make a best-effort guess or generic entry.
-
                                         let vendor = cpe_uri.vendor().to_string();
                                         let product = cpe_uri.product().to_string();
                                         let version = cpe_uri.version().to_string();

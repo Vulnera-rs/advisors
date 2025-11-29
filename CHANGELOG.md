@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2025-11-29
+
+### Fixed
+- **GHSA Source**: Fixed GraphQL error by switching to `securityAdvisories` query root to support `updatedSince` argument.
+
+## [0.1.1] - 2025-11-25
+
+### Added
+- **Sync Examples**: Added example for syncing advisories from multiple sources.
+- **Timestamp Reset**: Implement reset functionality for sync timestamps in `VulnerabilityManager`.
+- **NVD Parsing**: Added custom deserializer for NVD datetime format.
+- **OSV Concurrency**: Enhance OSV source to support concurrent ecosystem syncs and advisory fetching.
+
+### Changed
+- **Batch Querying**: Enhanced batch querying for advisories with concurrent execution.
+- **Resilience**: Refactored EPSS and GHSA sources to use reqwest middleware with retry policies.
+- **Store Interface**: Update store interface to include reset sync timestamp functionality.
+- **Dependencies**: Bumped version and updated dependencies.
+
+### Fixed
+- **Timestamps**: Improved advisory storage logic to update timestamps only on successful sync.
+- **Error Handling**: Improved error handling in NVD and GHSA sources for better debugging.
+
 ## [0.1.0] - 2025-11-25
 
 ### Added

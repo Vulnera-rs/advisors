@@ -15,6 +15,7 @@ use tracing::{debug, info, warn};
 pub struct GHSASource {
     token: String,
     client: ClientWithMiddleware,
+    api_url: String,
 }
 
 impl GHSASource {
@@ -31,7 +32,17 @@ impl GHSASource {
             .with(RetryTransientMiddleware::new_with_policy(retry_policy))
             .build();
 
-        Self { token, client }
+        Self {
+            token,
+            client,
+            api_url: "https://api.github.com/graphql".to_string(),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_api_url(mut self, url: String) -> Self {
+        self.api_url = url;
+        self
     }
 }
 
@@ -51,78 +62,43 @@ impl AdvisorySource for GHSASource {
 
         loop {
             page_count += 1;
-            // Use updatedSince filter when available
-            let query = if since.is_some() {
-                r#"
-                query($cursor: String, $updatedSince: DateTime!) {
-                    securityVulnerabilities(first: 100, after: $cursor, updatedSince: $updatedSince) {
-                        pageInfo {
-                            hasNextPage
-                            endCursor
+
+            let query = r#"
+            query($cursor: String, $updatedSince: DateTime) {
+                securityAdvisories(first: 100, after: $cursor, updatedSince: $updatedSince) {
+                    pageInfo {
+                        hasNextPage
+                        endCursor
+                    }
+                    nodes {
+                        ghsaId
+                        summary
+                        description
+                        publishedAt
+                        updatedAt
+                        references {
+                            url
                         }
-                        nodes {
-                            advisory {
-                                ghsaId
-                                summary
-                                description
-                                publishedAt
-                                updatedAt
-                                references {
-                                    url
+                        identifiers {
+                            type
+                            value
+                        }
+                        vulnerabilities(first: 100) {
+                            nodes {
+                                package {
+                                    name
+                                    ecosystem
                                 }
-                                identifiers {
-                                    type
-                                    value
+                                vulnerableVersionRange
+                                firstPatchedVersion {
+                                    identifier
                                 }
-                            }
-                            package {
-                                name
-                                ecosystem
-                            }
-                            vulnerableVersionRange
-                            firstPatchedVersion {
-                                identifier
                             }
                         }
                     }
                 }
-                "#
-            } else {
-                r#"
-                query($cursor: String) {
-                    securityVulnerabilities(first: 100, after: $cursor) {
-                        pageInfo {
-                            hasNextPage
-                            endCursor
-                        }
-                        nodes {
-                            advisory {
-                                ghsaId
-                                summary
-                                description
-                                publishedAt
-                                updatedAt
-                                references {
-                                    url
-                                }
-                                identifiers {
-                                    type
-                                    value
-                                }
-                            }
-                            package {
-                                name
-                                ecosystem
-                            }
-                            vulnerableVersionRange
-                            firstPatchedVersion {
-                                identifier
-                            }
-                        }
-                    }
-                }
-                "#
-            };
+            }
+            "#;
 
             let variables = if let Some(since_dt) = since {
                 json!({
@@ -132,6 +108,7 @@ impl AdvisorySource for GHSASource {
             } else {
                 json!({
                     "cursor": cursor,
+                    "updatedSince": serde_json::Value::Null,
                 })
             };
 
@@ -142,7 +119,7 @@ impl AdvisorySource for GHSASource {
 
             let response = self
                 .client
-                .post("https://api.github.com/graphql")
+                .post(&self.api_url)
                 .header("Authorization", format!("Bearer {}", self.token))
                 .header("User-Agent", "vulnera-advisors")
                 .header("Content-Type", "application/json")
@@ -154,7 +131,6 @@ impl AdvisorySource for GHSASource {
                 let status = response.status();
                 let text = response.text().await?;
                 warn!("GHSA API error {}: {}", status, text);
-                // Return error instead of silently failing
                 return Err(AdvisoryError::source_fetch(
                     "GHSA",
                     format!("API returned {}: {}", status, text),
@@ -165,7 +141,6 @@ impl AdvisorySource for GHSASource {
 
             if let Some(errors) = data.errors {
                 warn!("GraphQL errors: {:?}", errors);
-                // Return error if GraphQL reports errors
                 return Err(AdvisoryError::source_fetch(
                     "GHSA",
                     format!("GraphQL errors: {:?}", errors),
@@ -173,11 +148,9 @@ impl AdvisorySource for GHSASource {
             }
 
             if let Some(data) = data.data {
-                for node in data.security_vulnerabilities.nodes {
-                    let advisory_data = node.advisory;
-
+                for advisory_node in data.security_advisories.nodes {
                     // Map to canonical Advisory
-                    let mut references: Vec<Reference> = advisory_data
+                    let mut references: Vec<Reference> = advisory_node
                         .references
                         .iter()
                         .map(|r| Reference {
@@ -188,59 +161,62 @@ impl AdvisorySource for GHSASource {
 
                     // Add identifiers as aliases
                     let mut aliases = Vec::new();
-                    for id in &advisory_data.identifiers {
+                    for id in &advisory_node.identifiers {
                         aliases.push(id.value.clone());
                     }
 
                     // Add identifiers as references/aliases
-                    for id in advisory_data.identifiers {
+                    for id in &advisory_node.identifiers {
                         references.push(Reference {
                             reference_type: ReferenceType::Other,
                             url: format!("{}:{}", id.id_type, id.value),
                         });
                     }
 
-                    let affected = vec![Affected {
-                        package: Package {
-                            ecosystem: node.package.ecosystem,
-                            name: node.package.name,
-                            purl: None, // Could construct PURL if needed
-                        },
-                        ranges: vec![Range {
-                            range_type: RangeType::Ecosystem,
-                            events: vec![
-                                Event::Introduced("0".to_string()), // Simplified
-                                Event::Fixed(
-                                    node.first_patched_version
-                                        .map(|v| v.identifier)
-                                        .unwrap_or_else(|| "0.0.0".to_string()),
-                                ),
-                            ],
-                            repo: None,
-                        }],
-                        versions: vec![], // We have ranges
-                        ecosystem_specific: Some(json!({
-                            "vulnerable_range": node.vulnerable_version_range
-                        })),
-                        database_specific: None,
-                    }];
+                    let mut affected = Vec::new();
+                    for vuln in advisory_node.vulnerabilities.nodes {
+                        affected.push(Affected {
+                            package: Package {
+                                ecosystem: vuln.package.ecosystem,
+                                name: vuln.package.name,
+                                purl: None,
+                            },
+                            ranges: vec![Range {
+                                range_type: RangeType::Ecosystem,
+                                events: vec![
+                                    Event::Introduced("0".to_string()),
+                                    Event::Fixed(
+                                        vuln.first_patched_version
+                                            .map(|v| v.identifier)
+                                            .unwrap_or_else(|| "0.0.0".to_string()),
+                                    ),
+                                ],
+                                repo: None,
+                            }],
+                            versions: vec![],
+                            ecosystem_specific: Some(json!({
+                                "vulnerable_range": vuln.vulnerable_version_range
+                            })),
+                            database_specific: None,
+                        });
+                    }
 
                     advisories.push(Advisory {
-                        id: advisory_data.ghsa_id,
-                        summary: Some(advisory_data.summary),
-                        details: Some(advisory_data.description),
+                        id: advisory_node.ghsa_id,
+                        summary: Some(advisory_node.summary),
+                        details: Some(advisory_node.description),
                         affected,
                         references,
-                        published: Some(advisory_data.published_at),
-                        modified: Some(advisory_data.updated_at),
+                        published: Some(advisory_node.published_at),
+                        modified: Some(advisory_node.updated_at),
                         aliases: Some(aliases),
                         database_specific: Some(json!({ "source": "GHSA" })),
                         enrichment: None,
                     });
                 }
 
-                if data.security_vulnerabilities.page_info.has_next_page {
-                    cursor = data.security_vulnerabilities.page_info.end_cursor;
+                if data.security_advisories.page_info.has_next_page {
+                    cursor = data.security_advisories.page_info.end_cursor;
                     if page_count % 10 == 0 {
                         info!(
                             "GHSA sync progress: {} pages, {} advisories so far",
@@ -274,15 +250,15 @@ struct GraphQlResponse {
 
 #[derive(Deserialize)]
 struct Data {
-    #[serde(rename = "securityVulnerabilities")]
-    security_vulnerabilities: SecurityVulnerabilities,
+    #[serde(rename = "securityAdvisories")]
+    security_advisories: SecurityAdvisories,
 }
 
 #[derive(Deserialize)]
-struct SecurityVulnerabilities {
+struct SecurityAdvisories {
     #[serde(rename = "pageInfo")]
     page_info: PageInfo,
-    nodes: Vec<Node>,
+    nodes: Vec<GhsaAdvisoryNode>,
 }
 
 #[derive(Deserialize)]
@@ -294,17 +270,7 @@ struct PageInfo {
 }
 
 #[derive(Deserialize)]
-struct Node {
-    advisory: GhsaAdvisory,
-    package: GhsaPackage,
-    #[serde(rename = "vulnerableVersionRange")]
-    vulnerable_version_range: String,
-    #[serde(rename = "firstPatchedVersion")]
-    first_patched_version: Option<GhsaVersion>,
-}
-
-#[derive(Deserialize)]
-struct GhsaAdvisory {
+struct GhsaAdvisoryNode {
     #[serde(rename = "ghsaId")]
     ghsa_id: String,
     summary: String,
@@ -315,6 +281,21 @@ struct GhsaAdvisory {
     updated_at: DateTime<Utc>,
     references: Vec<GhsaReference>,
     identifiers: Vec<GhsaIdentifier>,
+    vulnerabilities: GhsaVulnerabilitiesConnection,
+}
+
+#[derive(Deserialize)]
+struct GhsaVulnerabilitiesConnection {
+    nodes: Vec<GhsaVulnerability>,
+}
+
+#[derive(Deserialize)]
+struct GhsaVulnerability {
+    package: GhsaPackage,
+    #[serde(rename = "vulnerableVersionRange")]
+    vulnerable_version_range: String,
+    #[serde(rename = "firstPatchedVersion")]
+    first_patched_version: Option<GhsaVersion>,
 }
 
 #[derive(Deserialize)]
@@ -338,4 +319,99 @@ struct GhsaPackage {
 #[derive(Deserialize)]
 struct GhsaVersion {
     identifier: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wiremock::matchers::{body_string_contains, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn test_fetch_advisories_full() {
+        let mock_server = MockServer::start().await;
+        let source = GHSASource::new("fake_token".to_string()).with_api_url(mock_server.uri());
+
+        let response_body = json!({
+            "data": {
+                "securityAdvisories": {
+                    "pageInfo": {
+                        "hasNextPage": false,
+                        "endCursor": null
+                    },
+                    "nodes": [
+                        {
+                            "ghsaId": "GHSA-xxxx-yyyy-zzzz",
+                            "summary": "Test Advisory",
+                            "description": "This is a test advisory",
+                            "publishedAt": "2023-01-01T00:00:00Z",
+                            "updatedAt": "2023-01-02T00:00:00Z",
+                            "references": [
+                                { "url": "https://example.com" }
+                            ],
+                            "identifiers": [
+                                { "type": "CVE", "value": "CVE-2023-1234" }
+                            ],
+                            "vulnerabilities": {
+                                "nodes": [
+                                    {
+                                        "package": {
+                                            "name": "test-package",
+                                            "ecosystem": "NPM"
+                                        },
+                                        "vulnerableVersionRange": "< 1.0.0",
+                                        "firstPatchedVersion": {
+                                            "identifier": "1.0.0"
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            }
+        });
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .and(body_string_contains("securityAdvisories"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response_body))
+            .mount(&mock_server)
+            .await;
+
+        let advisories = source.fetch(None).await.unwrap();
+        assert_eq!(advisories.len(), 1);
+        assert_eq!(advisories[0].id, "GHSA-xxxx-yyyy-zzzz");
+        assert_eq!(advisories[0].affected.len(), 1);
+        assert_eq!(advisories[0].affected[0].package.name, "test-package");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_advisories_since() {
+        let mock_server = MockServer::start().await;
+        let source = GHSASource::new("fake_token".to_string()).with_api_url(mock_server.uri());
+
+        let response_body = json!({
+            "data": {
+                "securityAdvisories": {
+                    "pageInfo": {
+                        "hasNextPage": false,
+                        "endCursor": null
+                    },
+                    "nodes": []
+                }
+            }
+        });
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .and(body_string_contains("updatedSince"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response_body))
+            .mount(&mock_server)
+            .await;
+
+        let since = Utc::now();
+        let advisories = source.fetch(Some(since)).await.unwrap();
+        assert_eq!(advisories.len(), 0);
+    }
 }

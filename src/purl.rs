@@ -6,7 +6,7 @@
 //! # Example
 //!
 //! ```rust
-//! use vulnera_advisors::Purl;
+//! use vulnera_advisor::Purl;
 //!
 //! // Simple PURL
 //! let purl = Purl::new("npm", "lodash")
@@ -101,7 +101,7 @@ pub enum PurlError {
 /// # Example
 ///
 /// ```rust
-/// use vulnera_advisors::Purl;
+/// use vulnera_advisor::Purl;
 ///
 /// // Scoped npm package
 /// let purl = Purl::new("npm", "core")
@@ -136,7 +136,7 @@ impl Purl {
     /// # Example
     ///
     /// ```rust
-    /// use vulnera_advisors::Purl;
+    /// use vulnera_advisor::Purl;
     ///
     /// let purl = Purl::new("crates.io", "serde");
     /// assert_eq!(purl.purl_type, "cargo");
@@ -160,7 +160,7 @@ impl Purl {
     /// # Example
     ///
     /// ```rust
-    /// use vulnera_advisors::Purl;
+    /// use vulnera_advisor::Purl;
     ///
     /// // Valid ecosystem
     /// let purl = Purl::new_validated("npm", "lodash").unwrap();
@@ -244,7 +244,7 @@ impl Purl {
     /// # Example
     ///
     /// ```rust
-    /// use vulnera_advisors::Purl;
+    /// use vulnera_advisor::Purl;
     ///
     /// let purl = Purl::parse("pkg:npm/lodash@4.17.20").unwrap();
     /// assert_eq!(purl.purl_type, "npm");
@@ -355,7 +355,7 @@ impl fmt::Display for Purl {
 /// # Example
 ///
 /// ```rust
-/// use vulnera_advisors::purl::purl;
+/// use vulnera_advisor::purl::purl;
 ///
 /// let p = purl("npm", "lodash", "4.17.20");
 /// assert_eq!(p.to_string(), "pkg:npm/lodash@4.17.20");
@@ -369,7 +369,7 @@ pub fn purl(ecosystem: &str, name: &str, version: &str) -> Purl {
 /// # Example
 ///
 /// ```rust
-/// use vulnera_advisors::purl::purls_from_packages;
+/// use vulnera_advisor::purl::purls_from_packages;
 ///
 /// let purls = purls_from_packages(&[
 ///     ("npm", "lodash", "4.17.20"),

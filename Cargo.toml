@@ -1,6 +1,6 @@
 [package]
 name = "vulnera-advisor"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "Aggregates security advisories from GHSA, NVD, OSV, CISA KEV, and more"
 license = "GPL-3.0-or-later"
@@ -31,14 +31,15 @@ async-trait = "0.1.89"
 governor = "0.10.2"
 nonzero_ext = "0.3"
 reqwest-middleware = "0.4"
-reqwest-retry = "0.7"
+reqwest-retry = "0.8"
 cpe = "0.1"
 packageurl = "0.5.0"
 semver = "1.0"
 async-stream = "0.3"
 regex-lite = "0.1"
-tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
 mockall = "0.14"
+wiremock = "0.6"
