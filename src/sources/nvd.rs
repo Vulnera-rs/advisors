@@ -8,9 +8,12 @@ use governor::clock::DefaultClock;
 use governor::middleware::NoOpMiddleware;
 use governor::state::{InMemoryState, NotKeyed};
 use governor::{Quota, RateLimiter};
+use once_cell::sync::Lazy;
+use regex_lite::Regex;
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::{RetryTransientMiddleware, policies::ExponentialBackoff};
 use serde::{Deserialize, Deserializer};
+use std::collections::HashSet;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -43,12 +46,20 @@ where
     )))
 }
 
+static GHSA_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)(GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4})").unwrap());
+static OSV_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)osv\.dev/vulnerability/([^/?#]+)").unwrap());
+static CVE_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(CVE-\d{4}-\d{4,})").unwrap());
+
 pub struct NVDSource {
     api_key: Option<String>,
     client: ClientWithMiddleware,
     limiter: Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock, NoOpMiddleware>>,
     /// Maximum number of CVEs to fetch (None = unlimited)
     max_results: Option<u32>,
+    /// Optional API URL (useful for tests / mocks)
+    api_url: Option<String>,
 }
 
 impl NVDSource {
@@ -88,14 +99,24 @@ impl NVDSource {
             client,
             limiter,
             max_results,
+            api_url: None,
         }
+    }
+
+    /// Override the API base URL (useful for mock servers in tests)
+    pub fn with_api_url(mut self, api_url: impl Into<String>) -> Self {
+        self.api_url = Some(api_url.into());
+        self
     }
 }
 
 #[async_trait]
 impl AdvisorySource for NVDSource {
     async fn fetch(&self, since: Option<DateTime<Utc>>) -> Result<Vec<Advisory>> {
-        let base_url = "https://services.nvd.nist.gov/rest/json/cves/2.0";
+        let base_url = self
+            .api_url
+            .as_deref()
+            .unwrap_or("https://services.nvd.nist.gov/rest/json/cves/2.0");
         let mut advisories = Vec::new();
         let mut start_index = 0;
         let results_per_page = 2000; // Max allowed by NVD
@@ -119,7 +140,6 @@ impl AdvisorySource for NVDSource {
 
                 if duration.num_days() > max_days {
                     // If range exceeds 120 days, we need to chunk
-                    // For first implementation, just use last 120 days and log warning
                     warn!(
                         "NVD sync: Last sync was {} days ago (max: {}). Only fetching last {} days.",
                         duration.num_days(),
@@ -235,6 +255,30 @@ impl AdvisorySource for NVDSource {
                     })
                     .collect();
 
+                // Build alias set from references (e.g., GHSA / OSV IDs) and dedupe
+                let mut alias_set: HashSet<String> = HashSet::new();
+                for r in &cve.references {
+                    // GHSA: https://github.com/advisories/GHSA-xxxx-xxxx-xxxx
+                    if let Some(caps) = GHSA_REGEX.captures(&r.url) {
+                        alias_set.insert(caps[1].to_uppercase());
+                    }
+
+                    // OSV: https://osv.dev/vulnerability/<id>
+                    if let Some(caps) = OSV_REGEX.captures(&r.url) {
+                        let osv_id = caps[1].to_string();
+                        // If the OSV id looks like a CVE, don't add it here (CVE already present)
+                        if CVE_REGEX.captures(&osv_id).is_none() {
+                            alias_set.insert(osv_id);
+                        }
+                    }
+                }
+
+                let aliases_field = if alias_set.is_empty() {
+                    None
+                } else {
+                    Some(alias_set.into_iter().collect())
+                };
+
                 advisories.push(Advisory {
                     id: cve.id,
                     summary: None,
@@ -243,7 +287,7 @@ impl AdvisorySource for NVDSource {
                     references,
                     published: Some(cve.published),
                     modified: Some(cve.last_modified),
-                    aliases: None,
+                    aliases: aliases_field,
                     database_specific: Some(serde_json::json!({
                         "source": "NVD",
                         "metrics": cve.metrics,
@@ -334,4 +378,89 @@ struct Description {
 #[derive(Deserialize)]
 struct NvdReference {
     url: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn test_nvd_parses_ghsa_and_osv_aliases() {
+        let mock_server = MockServer::start().await;
+        let source = NVDSource::with_max_results(None, Some(1)).with_api_url(mock_server.uri());
+
+        let response_body = json!({
+            "totalResults": 1,
+            "vulnerabilities": [
+                {
+                    "cve": {
+                        "id": "CVE-2024-12345",
+                        "published": "2024-06-30T12:00:00.000",
+                        "lastModified": "2024-06-30T12:00:00.000",
+                        "descriptions": [ { "value": "This is a description" } ],
+                        "references": [
+                            { "url": "https://github.com/advisories/GHSA-1111-2222-3333" },
+                            { "url": "https://osv.dev/vulnerability/OSV-2024-1234" }
+                        ],
+                        "metrics": {},
+                        "configurations": []
+                    }
+                }
+            ]
+        });
+
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response_body))
+            .mount(&mock_server)
+            .await;
+
+        let advisories = source.fetch(None).await.unwrap();
+        assert_eq!(advisories.len(), 1);
+        let adv = &advisories[0];
+        assert_eq!(adv.id, "CVE-2024-12345");
+        let aliases = adv.aliases.as_ref().unwrap();
+        assert!(
+            aliases
+                .iter()
+                .any(|a| a.eq_ignore_ascii_case("GHSA-1111-2222-3333"))
+        );
+        assert!(aliases.iter().any(|a| a == "OSV-2024-1234"));
+    }
+
+    #[tokio::test]
+    async fn test_nvd_no_aliases_none() {
+        let mock_server = MockServer::start().await;
+        let source = NVDSource::with_max_results(None, Some(1)).with_api_url(mock_server.uri());
+
+        let response_body = json!({
+            "totalResults": 1,
+            "vulnerabilities": [
+                {
+                    "cve": {
+                        "id": "CVE-2024-22222",
+                        "published": "2024-06-30T12:00:00.000",
+                        "lastModified": "2024-06-30T12:00:00.000",
+                        "descriptions": [ { "value": "No aliases here" } ],
+                        "references": [],
+                        "metrics": {},
+                        "configurations": []
+                    }
+                }
+            ]
+        });
+
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response_body))
+            .mount(&mock_server)
+            .await;
+
+        let advisories = source.fetch(None).await.unwrap();
+        assert_eq!(advisories.len(), 1);
+        assert!(advisories[0].aliases.is_none());
+    }
 }
