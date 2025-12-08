@@ -75,9 +75,7 @@ impl ReportAggregator {
             let cves = Self::extract_cve_ids(advisory);
             for cve in cves {
                 // Only use CVE as canonical if not already mapped to another ID
-                if !cve_map.contains_key(&cve) {
-                    cve_map.insert(cve, advisory.id.clone());
-                }
+                cve_map.entry(cve).or_insert_with(|| advisory.id.clone());
             }
         }
 

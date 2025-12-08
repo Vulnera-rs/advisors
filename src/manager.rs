@@ -12,6 +12,7 @@ use crate::sources::kev::KevSource;
 use crate::sources::ossindex::OssIndexSource;
 use crate::sources::{AdvisorySource, ghsa::GHSASource, nvd::NVDSource, osv::OSVSource};
 use crate::store::{AdvisoryStore, DragonflyStore, EnrichmentData, HealthStatus, OssIndexCache};
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
@@ -374,25 +375,36 @@ impl VulnerabilityManager {
 
     /// Sync enrichment data (KEV and EPSS).
     pub async fn sync_enrichment(&self) -> Result<()> {
+        self.sync_enrichment_with_cves(&[]).await
+    }
+
+    /// Sync enrichment data with optional extra CVE IDs to broaden EPSS coverage.
+    pub async fn sync_enrichment_with_cves(&self, extra_cves: &[String]) -> Result<()> {
         info!("Syncing enrichment data (KEV, EPSS)...");
+
+        let mut enrichment: HashMap<String, EnrichmentData> = HashMap::new();
 
         // Sync KEV data
         match self.kev_source.fetch_catalog().await {
             Ok(kev_entries) => {
                 info!("Processing {} KEV entries", kev_entries.len());
                 for (cve_id, entry) in kev_entries {
-                    let data = EnrichmentData {
-                        epss_score: None,
-                        epss_percentile: None,
-                        is_kev: true,
-                        kev_due_date: entry.due_date_utc().map(|d| d.to_rfc3339()),
-                        kev_date_added: entry.date_added_utc().map(|d| d.to_rfc3339()),
-                        kev_ransomware: Some(entry.is_ransomware_related()),
-                        updated_at: chrono::Utc::now().to_rfc3339(),
-                    };
-                    if let Err(e) = self.store.store_enrichment(&cve_id, &data).await {
-                        debug!("Failed to store KEV enrichment for {}: {}", cve_id, e);
-                    }
+                    let data = enrichment
+                        .entry(cve_id.clone())
+                        .or_insert_with(|| EnrichmentData {
+                            epss_score: None,
+                            epss_percentile: None,
+                            is_kev: false,
+                            kev_due_date: None,
+                            kev_date_added: None,
+                            kev_ransomware: None,
+                            updated_at: String::new(),
+                        });
+
+                    data.is_kev = true;
+                    data.kev_due_date = entry.due_date_utc().map(|d| d.to_rfc3339());
+                    data.kev_date_added = entry.date_added_utc().map(|d| d.to_rfc3339());
+                    data.kev_ransomware = Some(entry.is_ransomware_related());
                 }
             }
             Err(e) => {
@@ -400,7 +412,75 @@ impl VulnerabilityManager {
             }
         }
 
+        // Sync EPSS for known CVEs plus any extra provided by caller
+        let epss_targets = Self::collect_enrichment_targets(&enrichment, extra_cves);
+        if !epss_targets.is_empty() {
+            match self
+                .epss_source
+                .fetch_scores_batch(&epss_targets, 200)
+                .await
+            {
+                Ok(scores) => {
+                    Self::merge_epss_scores(&mut enrichment, scores);
+                }
+                Err(e) => {
+                    warn!("Failed to fetch EPSS scores: {}", e);
+                }
+            }
+        }
+
+        // Persist merged enrichment data
+        if !enrichment.is_empty() {
+            let now = chrono::Utc::now().to_rfc3339();
+            for (cve_id, mut data) in enrichment {
+                if data.updated_at.is_empty() {
+                    data.updated_at = now.clone();
+                }
+                if let Err(e) = self.store.store_enrichment(&cve_id, &data).await {
+                    debug!("Failed to store enrichment for {}: {}", cve_id, e);
+                }
+            }
+        }
+
         Ok(())
+    }
+
+    /// Build the list of CVE IDs to request EPSS for.
+    fn collect_enrichment_targets(
+        current: &HashMap<String, EnrichmentData>,
+        extra: &[String],
+    ) -> Vec<String> {
+        let mut set: std::collections::HashSet<String> = current.keys().cloned().collect();
+        for c in extra {
+            set.insert(c.clone());
+        }
+        set.into_iter().collect()
+    }
+
+    /// Merge EPSS scores into enrichment map.
+    fn merge_epss_scores(
+        enrichment: &mut HashMap<String, EnrichmentData>,
+        scores: HashMap<String, crate::sources::epss::EpssScore>,
+    ) {
+        for (cve_id, score) in scores {
+            let data = enrichment
+                .entry(cve_id.clone())
+                .or_insert_with(|| EnrichmentData {
+                    epss_score: None,
+                    epss_percentile: None,
+                    is_kev: false,
+                    kev_due_date: None,
+                    kev_date_added: None,
+                    kev_ransomware: None,
+                    updated_at: String::new(),
+                });
+
+            data.epss_score = Some(score.epss);
+            data.epss_percentile = Some(score.percentile);
+            if let Some(date) = score.date_utc() {
+                data.updated_at = date.to_rfc3339();
+            }
+        }
     }
 
     /// Query advisories for a specific package.
@@ -489,8 +569,13 @@ impl VulnerabilityManager {
                     // Check ranges
                     for range in &affected.ranges {
                         match range.range_type {
-                            RangeType::Semver | RangeType::Ecosystem => {
+                            RangeType::Semver => {
                                 if Self::matches_semver_range(version, &range.events) {
+                                    return true;
+                                }
+                            }
+                            RangeType::Ecosystem => {
+                                if Self::matches_ecosystem_range(version, &range.events) {
                                     return true;
                                 }
                             }
@@ -548,8 +633,7 @@ impl VulnerabilityManager {
                             }
                         }
                         RangeType::Ecosystem => {
-                            // For ecosystem ranges, try semver first as fallback
-                            if Self::matches_semver_range(version, &range.events) {
+                            if Self::matches_ecosystem_range(version, &range.events) {
                                 is_vulnerable = true;
                                 break;
                             }
@@ -580,46 +664,197 @@ impl VulnerabilityManager {
         Ok(matched)
     }
 
-    /// Check if a version matches a semver range.
+    /// Check if a version matches any semver interval described by OSV events.
+    ///
+    /// OSV allows multiple introduced/fixed pairs; we evaluate each interval in order.
     fn matches_semver_range(version: &str, events: &[Event]) -> bool {
         let Ok(v) = semver::Version::parse(version) else {
             return false;
         };
 
-        let mut introduced: Option<semver::Version> = None;
-        let mut fixed: Option<semver::Version> = None;
-        let mut last_affected: Option<semver::Version> = None;
+        #[derive(Default)]
+        struct Interval {
+            start: Option<semver::Version>,
+            end: Option<semver::Version>,
+            end_inclusive: bool,
+        }
+
+        let mut intervals: Vec<Interval> = Vec::new();
+        let mut current_start: Option<semver::Version> = None;
 
         for event in events {
             match event {
                 Event::Introduced(ver) => {
                     if let Ok(parsed) = semver::Version::parse(ver) {
-                        introduced = Some(parsed);
+                        current_start = Some(parsed);
                     } else if ver == "0" {
-                        introduced = Some(semver::Version::new(0, 0, 0));
+                        current_start = Some(semver::Version::new(0, 0, 0));
                     }
                 }
                 Event::Fixed(ver) => {
-                    if let Ok(parsed) = semver::Version::parse(ver) {
-                        fixed = Some(parsed);
-                    }
+                    let end = semver::Version::parse(ver).ok();
+                    intervals.push(Interval {
+                        start: current_start.clone(),
+                        end,
+                        end_inclusive: false,
+                    });
+                    current_start = None;
                 }
                 Event::LastAffected(ver) => {
-                    if let Ok(parsed) = semver::Version::parse(ver) {
-                        last_affected = Some(parsed);
-                    }
+                    let end = semver::Version::parse(ver).ok();
+                    intervals.push(Interval {
+                        start: current_start.clone(),
+                        end,
+                        end_inclusive: true,
+                    });
+                    current_start = None;
                 }
-                Event::Limit(_) => {}
+                Event::Limit(ver) => {
+                    // Treat limit as an exclusive upper bound for any open interval.
+                    let end = semver::Version::parse(ver).ok();
+                    intervals.push(Interval {
+                        start: current_start.clone(),
+                        end,
+                        end_inclusive: false,
+                    });
+                    current_start = None;
+                }
             }
         }
 
-        match (introduced, fixed, last_affected) {
-            (Some(start), Some(end), _) => v >= start && v < end,
-            (Some(start), None, Some(last)) => v >= start && v <= last,
-            (Some(start), None, None) => v >= start,
-            (None, Some(end), _) => v < end,
-            _ => false,
+        // Open-ended interval from the last introduction.
+        if current_start.is_some() {
+            intervals.push(Interval {
+                start: current_start,
+                end: None,
+                end_inclusive: false,
+            });
         }
+
+        intervals.into_iter().any(|interval| {
+            if let Some(start) = &interval.start {
+                if v < *start {
+                    return false;
+                }
+            }
+
+            match (&interval.end, interval.end_inclusive) {
+                (Some(end), true) => v <= *end,
+                (Some(end), false) => v < *end,
+                (None, _) => true,
+            }
+        })
+    }
+
+    /// Check if a version matches an ecosystem range. Falls back to semver if both parse as semver,
+    /// otherwise uses dotted numeric comparison (e.g., "1.10" > "1.2").
+    fn matches_ecosystem_range(version: &str, events: &[Event]) -> bool {
+        // Try semver first; if any boundary fails semver parsing, fall back to dotted.
+        if events.iter().all(|e| match e {
+            Event::Introduced(v) | Event::Fixed(v) | Event::LastAffected(v) | Event::Limit(v) => {
+                semver::Version::parse(v).is_ok() || v == "0"
+            }
+        }) {
+            return Self::matches_semver_range(version, events);
+        }
+
+        let version_parts = match Self::parse_dotted(version) {
+            Some(p) => p,
+            None => return false,
+        };
+
+        #[derive(Default)]
+        struct Interval {
+            start: Option<Vec<u64>>,
+            end: Option<Vec<u64>>,
+            end_inclusive: bool,
+        }
+
+        let mut intervals: Vec<Interval> = Vec::new();
+        let mut current_start: Option<Vec<u64>> = None;
+
+        for event in events {
+            match event {
+                Event::Introduced(ver) => {
+                    current_start = Self::parse_dotted(ver);
+                }
+                Event::Fixed(ver) => {
+                    intervals.push(Interval {
+                        start: current_start.clone(),
+                        end: Self::parse_dotted(ver),
+                        end_inclusive: false,
+                    });
+                    current_start = None;
+                }
+                Event::LastAffected(ver) => {
+                    intervals.push(Interval {
+                        start: current_start.clone(),
+                        end: Self::parse_dotted(ver),
+                        end_inclusive: true,
+                    });
+                    current_start = None;
+                }
+                Event::Limit(ver) => {
+                    intervals.push(Interval {
+                        start: current_start.clone(),
+                        end: Self::parse_dotted(ver),
+                        end_inclusive: false,
+                    });
+                    current_start = None;
+                }
+            }
+        }
+
+        if current_start.is_some() {
+            intervals.push(Interval {
+                start: current_start,
+                end: None,
+                end_inclusive: false,
+            });
+        }
+
+        intervals.into_iter().any(|interval| {
+            if let Some(start) = &interval.start {
+                if Self::cmp_dotted(&version_parts, start) == Ordering::Less {
+                    return false;
+                }
+            }
+
+            match (&interval.end, interval.end_inclusive) {
+                (Some(end), true) => Self::cmp_dotted(&version_parts, end) != Ordering::Greater,
+                (Some(end), false) => Self::cmp_dotted(&version_parts, end) == Ordering::Less,
+                (None, _) => true,
+            }
+        })
+    }
+
+    /// Parse dotted numeric versions (e.g., "1.2.10"). Non-numeric segments cause failure.
+    fn parse_dotted(v: &str) -> Option<Vec<u64>> {
+        let mut parts = Vec::new();
+        for chunk in v.split(|c: char| !c.is_ascii_digit()) {
+            if chunk.is_empty() {
+                continue;
+            }
+            let Ok(num) = chunk.parse::<u64>() else {
+                return None;
+            };
+            parts.push(num);
+        }
+        if parts.is_empty() { None } else { Some(parts) }
+    }
+
+    /// Compare dotted numeric versions.
+    fn cmp_dotted(a: &[u64], b: &[u64]) -> Ordering {
+        let max_len = a.len().max(b.len());
+        for i in 0..max_len {
+            let ai = *a.get(i).unwrap_or(&0);
+            let bi = *b.get(i).unwrap_or(&0);
+            match ai.cmp(&bi) {
+                Ordering::Equal => continue,
+                ord => return ord,
+            }
+        }
+        Ordering::Equal
     }
 
     /// Enrich a single advisory with EPSS/KEV data.
@@ -945,17 +1180,40 @@ impl VulnerabilityManager {
             map.insert(purl.clone(), Vec::new());
         }
 
-        // Group advisories
         for advisory in advisories {
             for affected in &advisory.affected {
-                // Find matching PURL
                 for purl in purls {
-                    if let Ok(parsed) = Purl::parse(purl) {
-                        if parsed.name == affected.package.name {
-                            map.entry(purl.clone()).or_default().push(advisory.clone());
-                            break;
+                    let Ok(parsed) = Purl::parse(purl) else {
+                        continue;
+                    };
+
+                    // Match on ecosystem as well as name to avoid cross-ecosystem collisions
+                    let affected_eco = affected.package.ecosystem.to_lowercase();
+                    let purl_eco = parsed.purl_type.to_lowercase();
+                    let purl_eco_alt = parsed.ecosystem().to_lowercase();
+                    if affected_eco != purl_eco && affected_eco != purl_eco_alt {
+                        continue;
+                    }
+
+                    if parsed.name != affected.package.name {
+                        continue;
+                    }
+
+                    if let Some(ver) = parsed.version.as_deref() {
+                        // If a version is specified, ensure the advisory actually covers it.
+                        let version_matches = affected.versions.contains(&ver.to_string())
+                            || affected.ranges.iter().any(|r| {
+                                matches!(r.range_type, RangeType::Semver | RangeType::Ecosystem)
+                                    && Self::matches_semver_range(ver, &r.events)
+                            });
+
+                        if !version_matches {
+                            continue;
                         }
                     }
+
+                    map.entry(purl.clone()).or_default().push(advisory.clone());
+                    break;
                 }
             }
         }

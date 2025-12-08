@@ -281,13 +281,8 @@ impl AdvisoryStore for DragonflyStore {
             .smembers(self.key(&format!("idx:{}:{}", ecosystem, package)))
             .await?;
 
-        let mut advisories = Vec::new();
-        for id in ids {
-            if let Some(advisory) = self.get(&id).await? {
-                advisories.push(advisory);
-            }
-        }
-        Ok(advisories)
+        // Batch fetch to avoid N+1 round trips and repeated decompress calls
+        self.get_batch(&ids).await
     }
 
     async fn last_sync(&self, source: &str) -> Result<Option<String>> {

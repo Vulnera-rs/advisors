@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2025-12-08
+
+### Added
+- Ecosystem-aware range matcher with dotted numeric fallback for non-SemVer ecosystems.
+- Enrichment sync now accepts extra CVE IDs for broader EPSS coverage via `sync_enrichment_with_cves`.
+- New unit tests for semver interval matching, ecosystem ranges, and enrichment helpers.
+
+### Changed
+- OSS Index grouping now matches ecosystem and version to avoid cross-ecosystem collisions.
+- Package fetches use batched retrieval to reduce Redis round trips.
+
+### Fixed
+- Clippy-cleanup across aggregator and OSV source (entry API, Copy captures).
+
 ## [0.1.2] - 2025-11-29
 
 ### Fixed

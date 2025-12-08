@@ -35,14 +35,18 @@ impl OSVSource {
             .pool_max_idle_per_host(10)
             .build()
             .unwrap_or_default();
-        
+
         // Retry policy: 3 retries with exponential backoff
         let retry_policy = ExponentialBackoff::builder().build_with_max_retries(3);
         let client = ClientBuilder::new(raw_client.clone())
             .with(RetryTransientMiddleware::new_with_policy(retry_policy))
             .build();
-        
-        Self { ecosystems, client, raw_client }
+
+        Self {
+            ecosystems,
+            client,
+            raw_client,
+        }
     }
 }
 
@@ -78,14 +82,13 @@ impl OSVSource {
         let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_ECOSYSTEMS));
         // Use raw_client for ecosystem fetches (streaming ZIP downloads)
         let client = self.raw_client.clone();
-        
+
         let tasks: Vec<_> = ecosystems
             .into_iter()
             .map(|ecosystem| {
                 let sem = semaphore.clone();
                 let client = client.clone();
-                let since = since;
-                
+
                 tokio::spawn(async move {
                     let _permit = sem.acquire().await.expect("semaphore closed");
                     Self::fetch_ecosystem(&client, &ecosystem, since).await
@@ -226,14 +229,14 @@ impl OSVSource {
         let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_ADVISORY_FETCHES));
         let client = client.clone();
         let ecosystem = ecosystem.to_string();
-        
+
         let tasks: Vec<_> = changed_ids
             .into_iter()
             .map(|id| {
                 let sem = semaphore.clone();
                 let client = client.clone();
                 let ecosystem = ecosystem.clone();
-                
+
                 tokio::spawn(async move {
                     let _permit = sem.acquire().await.expect("semaphore closed");
                     let json_url = format!(
@@ -293,13 +296,14 @@ impl OSVSource {
         // Stream download to memory (ZIPs are usually <50MB compressed)
         let bytes = response.bytes().await?;
         let ecosystem = ecosystem.to_string();
-        
+
         // Parse ZIP in a blocking task to avoid blocking the async runtime
-        let advisories = tokio::task::spawn_blocking(move || {
-            Self::parse_zip_sync(&bytes, &ecosystem)
-        })
-        .await
-        .map_err(|e| AdvisoryError::source_fetch("OSV", format!("Task join error: {}", e)))??;
+        let advisories =
+            tokio::task::spawn_blocking(move || Self::parse_zip_sync(&bytes, &ecosystem))
+                .await
+                .map_err(|e| {
+                    AdvisoryError::source_fetch("OSV", format!("Task join error: {}", e))
+                })??;
 
         Ok(advisories)
     }
@@ -307,7 +311,7 @@ impl OSVSource {
     /// Synchronous ZIP parsing (runs in spawn_blocking)
     fn parse_zip_sync(bytes: &[u8], ecosystem: &str) -> Result<Vec<Advisory>> {
         use std::io::Cursor;
-        
+
         let reader = Cursor::new(bytes);
         let mut zip = zip::ZipArchive::new(reader)?;
         let mut advisories = Vec::with_capacity(zip.len());

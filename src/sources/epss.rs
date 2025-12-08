@@ -42,13 +42,13 @@ impl EpssSource {
             .connect_timeout(CONNECT_TIMEOUT)
             .build()
             .unwrap_or_default();
-        
+
         // Retry policy: 3 retries with exponential backoff
         let retry_policy = ExponentialBackoff::builder().build_with_max_retries(3);
         let client = ClientBuilder::new(raw_client)
             .with(RetryTransientMiddleware::new_with_policy(retry_policy))
             .build();
-        
+
         Self { client }
     }
 

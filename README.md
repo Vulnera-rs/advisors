@@ -36,7 +36,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-vulnera-advisors = "0.1.0"
+vulnera-advisors = "0.1.4"
 ```
 
 ## Quick Start
