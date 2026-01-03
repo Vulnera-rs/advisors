@@ -32,6 +32,71 @@ pub struct MatchOptions {
     pub include_enrichment: bool,
 }
 
+/// Statistics for a sync operation.
+#[derive(Debug, Clone, Default)]
+pub struct SyncStats {
+    /// Total number of sources attempted.
+    pub total_sources: usize,
+    /// Number of sources that synced successfully.
+    pub successful_sources: usize,
+    /// Number of sources that failed.
+    pub failed_sources: usize,
+    /// Total advisories synced across all sources.
+    pub total_advisories_synced: usize,
+    /// Map of source name to error message for failed sources.
+    pub errors: HashMap<String, String>,
+}
+
+/// Observer for monitoring sync progress and events.
+pub trait SyncObserver: Send + Sync {
+    /// Called when the sync operation starts.
+    fn on_sync_start(&self);
+
+    /// Called when a specific source starts syncing.
+    fn on_source_start(&self, source_name: &str);
+
+    /// Called when a source successfully syncs.
+    fn on_source_success(&self, source_name: &str, count: usize);
+
+    /// Called when a source fails to sync.
+    fn on_source_error(&self, source_name: &str, error: &crate::error::AdvisoryError);
+
+    /// Called when the sync operation completes.
+    fn on_sync_complete(&self, stats: &SyncStats);
+}
+
+/// Default observer that logs events using the `tracing` crate.
+pub struct TracingSyncObserver;
+
+impl SyncObserver for TracingSyncObserver {
+    fn on_sync_start(&self) {
+        info!("Starting full vulnerability sync...");
+    }
+
+    fn on_source_start(&self, source_name: &str) {
+        // We handle the "Syncing source..." log inside the manager logic usually,
+        // but let's centralize it here if possible, or support it.
+        // For now, let's just log at debug to avoid double logging if we keep old logs,
+        // but the plan is to REPLACE old logging.
+        info!("Syncing {}...", source_name);
+    }
+
+    fn on_source_success(&self, source_name: &str, count: usize) {
+        info!(
+            "Successfully synced {} advisories from {}",
+            count, source_name
+        );
+    }
+
+    fn on_source_error(&self, source_name: &str, error: &crate::error::AdvisoryError) {
+        error!("Failed to sync {}: {}", source_name, error);
+    }
+
+    fn on_sync_complete(&self, _stats: &SyncStats) {
+        info!("Sync completed.");
+    }
+}
+
 impl MatchOptions {
     /// Create options that include all vulnerabilities with enrichment.
     pub fn with_enrichment() -> Self {
@@ -102,6 +167,7 @@ pub struct VulnerabilityManagerBuilder {
     sources: Vec<Arc<dyn AdvisorySource + Send + Sync>>,
     custom_store: Option<Arc<dyn AdvisoryStore + Send + Sync>>,
     ossindex_source: Option<OssIndexSource>,
+    observer: Option<Arc<dyn SyncObserver>>,
 }
 
 impl Default for VulnerabilityManagerBuilder {
@@ -119,6 +185,7 @@ impl VulnerabilityManagerBuilder {
             sources: Vec::new(),
             custom_store: None,
             ossindex_source: None,
+            observer: None,
         }
     }
 
@@ -194,6 +261,12 @@ impl VulnerabilityManagerBuilder {
         self
     }
 
+    /// Set a custom sync observer.
+    pub fn with_observer(mut self, observer: Arc<dyn SyncObserver>) -> Self {
+        self.observer = Some(observer);
+        self
+    }
+
     /// Build the VulnerabilityManager.
     pub fn build(self) -> Result<VulnerabilityManager> {
         let store: Arc<dyn AdvisoryStore + Send + Sync> = match self.custom_store {
@@ -216,6 +289,9 @@ impl VulnerabilityManagerBuilder {
             kev_source: KevSource::new(),
             epss_source: EpssSource::new(),
             ossindex_source: self.ossindex_source,
+            observer: self
+                .observer
+                .unwrap_or_else(|| Arc::new(TracingSyncObserver)),
         })
     }
 }
@@ -227,6 +303,7 @@ pub struct VulnerabilityManager {
     kev_source: KevSource,
     epss_source: EpssSource,
     ossindex_source: Option<OssIndexSource>,
+    observer: Arc<dyn SyncObserver>,
 }
 
 impl VulnerabilityManager {
@@ -273,16 +350,23 @@ impl VulnerabilityManager {
     }
 
     /// Sync advisories from all configured sources.
-    pub async fn sync_all(&self) -> Result<()> {
-        info!("Starting full vulnerability sync...");
+    pub async fn sync_all(&self) -> Result<SyncStats> {
+        self.observer.on_sync_start();
 
         let mut handles = Vec::new();
+        let mut stats = SyncStats {
+            total_sources: self.sources.len(),
+            ..Default::default()
+        };
 
         for source in &self.sources {
             let source = source.clone();
             let store = self.store.clone();
+            let observer = self.observer.clone();
 
             let handle = tokio::spawn(async move {
+                observer.on_source_start(source.name());
+
                 let last_sync = match store.last_sync(source.name()).await {
                     Ok(Some(ts)) => match chrono::DateTime::parse_from_rfc3339(&ts) {
                         Ok(dt) => Some(dt.with_timezone(&chrono::Utc)),
@@ -291,56 +375,47 @@ impl VulnerabilityManager {
                     _ => None,
                 };
 
-                if let Some(since) = last_sync {
-                    info!("Syncing {} since {}", source.name(), since);
-                } else {
-                    info!("Syncing {} (full)", source.name());
-                }
-
                 match source.fetch(last_sync).await {
                     Ok(advisories) => {
                         if !advisories.is_empty() {
                             match store.upsert_batch(&advisories, source.name()).await {
                                 Ok(_) => {
-                                    info!(
-                                        "Successfully synced {} advisories from {}",
-                                        advisories.len(),
-                                        source.name()
-                                    );
+                                    observer.on_source_success(source.name(), advisories.len());
                                     // Update timestamp only after successful storage
                                     if let Err(e) = store.update_sync_timestamp(source.name()).await
                                     {
-                                        error!(
-                                            "Failed to update sync timestamp for {}: {}",
+                                        let err = AdvisoryError::source_fetch(
                                             source.name(),
-                                            e
+                                            format!("Failed to update timestamp: {}", e),
                                         );
+                                        observer.on_source_error(source.name(), &err);
+                                        // Non-critical error, count as success but maybe log warn?
+                                        // Observer handles logging.
                                     }
+                                    Ok((source.name().to_string(), advisories.len()))
                                 }
                                 Err(e) => {
-                                    error!(
-                                        "Failed to store advisories for {}: {}",
-                                        source.name(),
-                                        e
-                                    );
-                                    // Do NOT update timestamp on storage failure
+                                    // Store error is critical for this source
+                                    observer.on_source_error(source.name(), &e);
+                                    Err((source.name().to_string(), e.to_string()))
                                 }
                             }
                         } else {
-                            info!("No new advisories for {}", source.name());
-                            // Update sync timestamp even if no new advisories (successful check)
+                            observer.on_source_success(source.name(), 0);
+                            // Update sync timestamp even if no new advisories
                             if let Err(e) = store.update_sync_timestamp(source.name()).await {
-                                error!(
-                                    "Failed to update sync timestamp for {}: {}",
+                                let err = AdvisoryError::source_fetch(
                                     source.name(),
-                                    e
+                                    format!("Failed to update timestamp: {}", e),
                                 );
+                                observer.on_source_error(source.name(), &err);
                             }
+                            Ok((source.name().to_string(), 0))
                         }
                     }
                     Err(e) => {
-                        error!("Failed to fetch from {}: {}", source.name(), e);
-                        // Do NOT update timestamp on fetch failure
+                        observer.on_source_error(source.name(), &e);
+                        Err((source.name().to_string(), e.to_string()))
                     }
                 }
             });
@@ -349,13 +424,30 @@ impl VulnerabilityManager {
 
         // Wait for all tasks to complete
         for handle in handles {
-            if let Err(e) = handle.await {
-                error!("Task join error: {}", e);
+            match handle.await {
+                Ok(result) => match result {
+                    Ok((_, count)) => {
+                        stats.successful_sources += 1;
+                        stats.total_advisories_synced += count;
+                    }
+                    Err((name, error)) => {
+                        stats.failed_sources += 1;
+                        stats.errors.insert(name, error);
+                    }
+                },
+                Err(e) => {
+                    // Task panic or join error
+                    error!("Task join error: {}", e);
+                    stats.failed_sources += 1;
+                    stats
+                        .errors
+                        .insert("unknown".to_string(), format!("Task join error: {}", e));
+                }
             }
         }
 
-        info!("Sync completed.");
-        Ok(())
+        self.observer.on_sync_complete(&stats);
+        Ok(stats)
     }
 
     /// Reset the sync timestamp for a specific source.

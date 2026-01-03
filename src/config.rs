@@ -26,6 +26,16 @@ pub struct Config {
     /// Store configuration.
     #[serde(default)]
     pub store: StoreConfig,
+    /// Enable logging to file instead of stdout.
+    #[serde(default)]
+    pub log_to_file: bool,
+    /// Directory for log files (default: "logs").
+    #[serde(default = "default_log_dir")]
+    pub log_dir: String,
+}
+
+fn default_log_dir() -> String {
+    "logs".to_string()
 }
 
 /// Configuration for the NVD source.
@@ -178,6 +188,12 @@ impl Config {
                 .unwrap_or_else(|_| "vuln".to_string()),
         };
 
+        let log_to_file = env::var("VULNERA_LOG_TO_FILE")
+            .map(|v| v.to_lowercase() == "true")
+            .unwrap_or(false);
+
+        let log_dir = env::var("VULNERA_LOG_DIR").unwrap_or_else(|_| "logs".to_string());
+
         Ok(Self {
             ghsa_token,
             nvd_api_key,
@@ -185,6 +201,8 @@ impl Config {
             ossindex,
             nvd,
             store,
+            log_to_file,
+            log_dir,
         })
     }
 
@@ -197,6 +215,8 @@ impl Config {
             ossindex: None,
             nvd: NvdConfig::default(),
             store: StoreConfig::default(),
+            log_to_file: false,
+            log_dir: "logs".to_string(),
         }
     }
 

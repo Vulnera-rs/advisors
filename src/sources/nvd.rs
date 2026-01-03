@@ -218,10 +218,10 @@ impl AdvisorySource for NVDSource {
                                             .ok()
                                             .map(|mut p| {
                                                 if !version.is_empty() && version != "*" {
-                                                    p.with_version(version.clone());
+                                                    let _ = p.with_version(version.clone());
                                                 }
                                                 if ecosystem == "maven" {
-                                                    p.with_namespace(vendor.clone());
+                                                    let _ = p.with_namespace(vendor.clone());
                                                 }
                                                 p.to_string()
                                             });

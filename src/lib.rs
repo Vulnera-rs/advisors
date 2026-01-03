@@ -54,6 +54,7 @@
 pub mod aggregator;
 pub mod config;
 pub mod error;
+pub mod logging;
 pub mod manager;
 pub mod models;
 pub mod purl;

@@ -7,7 +7,7 @@
 
 use std::time::{Duration, Instant};
 use tokio::time::timeout;
-use tracing_subscriber::{EnvFilter, fmt};
+
 use vulnera_advisor::{Config, VulnerabilityManager};
 
 /// Timeout for the entire sync operation (20 minutes)
@@ -17,14 +17,11 @@ const SYNC_TIMEOUT: Duration = Duration::from_secs(1200);
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize tracing
-    fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
-
     // Load configuration from environment
     let config = Config::from_env()?;
+
+    // Initialize logging (hold the guard until the end of main!)
+    let _guard = vulnera_advisor::logging::init_logging(&config);
 
     println!("=== Vulnera Advisors Sync Test ===\n");
     println!("Redis URL: {}", config.redis_url);
@@ -110,11 +107,21 @@ async fn main() -> anyhow::Result<()> {
     let start = Instant::now();
 
     match timeout(SYNC_TIMEOUT, manager.sync_all()).await {
-        Ok(Ok(())) => {
+        Ok(Ok(stats)) => {
             println!(
                 "\n✓ Sync completed in {:.1}s",
                 start.elapsed().as_secs_f64()
             );
+            println!("  Sources attempted: {}", stats.total_sources);
+            println!("  Sources successful: {}", stats.successful_sources);
+            println!("  Sources failed: {}", stats.failed_sources);
+            println!("  Total advisories: {}", stats.total_advisories_synced);
+            if !stats.errors.is_empty() {
+                println!("  Errors:");
+                for (source, error) in &stats.errors {
+                    println!("    - {}: {}", source, error);
+                }
+            }
         }
         Ok(Err(e)) => {
             eprintln!(
