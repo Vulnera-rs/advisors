@@ -1263,6 +1263,118 @@ impl VulnerabilityManager {
         Ok(())
     }
 
+    // === Remediation Methods ===
+
+    /// Get remediation suggestions for a vulnerable package.
+    ///
+    /// This method checks if the specified version is vulnerable, and if so,
+    /// suggests the nearest and latest safe versions based on fixed versions
+    /// declared in the advisories.
+    ///
+    /// # Arguments
+    ///
+    /// * `ecosystem` - Package ecosystem (e.g., "npm", "pypi")
+    /// * `package` - Package name
+    /// * `current_version` - Current version to analyze
+    ///
+    /// # Returns
+    ///
+    /// A [`Remediation`] containing safe version suggestions and upgrade impact.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use vulnera_advisors::VulnerabilityManager;
+    ///
+    /// let remediation = manager.suggest_remediation("npm", "lodash", "4.17.20").await?;
+    /// if let Some(nearest) = remediation.nearest_safe {
+    ///     println!("Upgrade to {} ({:?} impact)", nearest, remediation.upgrade_impact);
+    /// }
+    /// ```
+    pub async fn suggest_remediation(
+        &self,
+        ecosystem: &str,
+        package: &str,
+        current_version: &str,
+    ) -> Result<crate::remediation::Remediation> {
+        // Get matching advisories for this version
+        let advisories = self.matches(ecosystem, package, current_version).await?;
+
+        // Build remediation using the semver matcher
+        let remediation = crate::remediation::build_remediation(
+            ecosystem,
+            package,
+            current_version,
+            &advisories,
+            None, // No registry versions, use only fixed versions from advisories
+            Self::matches_semver_range,
+        );
+
+        Ok(remediation)
+    }
+
+    /// Get remediation suggestions with registry lookup for all available versions.
+    ///
+    /// This is an enhanced version of [`suggest_remediation`] that fetches
+    /// available versions from package registries to provide more complete
+    /// upgrade suggestions.
+    ///
+    /// # Arguments
+    ///
+    /// * `ecosystem` - Package ecosystem (e.g., "npm", "pypi")
+    /// * `package` - Package name
+    /// * `current_version` - Current version to analyze
+    /// * `registry` - A version registry implementation to fetch available versions
+    ///
+    /// # Returns
+    ///
+    /// A [`crate::remediation::Remediation`] containing safe version suggestions from the full version list.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use vulnera_advisors::{VulnerabilityManager, PackageRegistry};
+    ///
+    /// let registry = PackageRegistry::new();
+    /// let remediation = manager
+    ///     .suggest_remediation_with_registry("npm", "lodash", "4.17.20", &registry)
+    ///     .await?;
+    /// ```
+    pub async fn suggest_remediation_with_registry(
+        &self,
+        ecosystem: &str,
+        package: &str,
+        current_version: &str,
+        registry: &dyn crate::version_registry::VersionRegistry,
+    ) -> Result<crate::remediation::Remediation> {
+        // Get matching advisories for this version
+        let advisories = self.matches(ecosystem, package, current_version).await?;
+
+        // Fetch all available versions from registry
+        let available_versions = match registry.get_versions(ecosystem, package).await {
+            Ok(versions) => Some(versions),
+            Err(e) => {
+                warn!(
+                    "Failed to fetch versions from registry, using advisory data only: {}",
+                    e
+                );
+                None
+            }
+        };
+
+        // Build remediation with registry versions
+        let remediation = crate::remediation::build_remediation(
+            ecosystem,
+            package,
+            current_version,
+            &advisories,
+            available_versions.as_deref(),
+            Self::matches_semver_range,
+        );
+
+        Ok(remediation)
+    }
+
     /// Group advisories by their associated PURL.
     fn group_advisories_by_purl(
         purls: &[String],

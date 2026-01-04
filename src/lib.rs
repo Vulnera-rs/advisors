@@ -58,8 +58,10 @@ pub mod logging;
 pub mod manager;
 pub mod models;
 pub mod purl;
+pub mod remediation;
 pub mod sources;
 pub mod store;
+pub mod version_registry;
 
 // Re-export main types
 pub use config::{Config, NvdConfig, OssIndexConfig, StoreConfig};
@@ -70,6 +72,10 @@ pub use models::{
     Severity,
 };
 pub use store::{AdvisoryStore, DragonflyStore, EnrichmentData, HealthStatus, OssIndexCache};
+
+// Re-export remediation types
+pub use remediation::{Remediation, UpgradeImpact, build_remediation, classify_upgrade_impact};
+pub use version_registry::{PackageRegistry, VersionRegistry};
 
 // Re-export PURL helper
 pub use purl::{KNOWN_ECOSYSTEMS, Purl, PurlError, purl, purls_from_packages, purls_to_strings};

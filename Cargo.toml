@@ -1,6 +1,6 @@
 [package]
 name = "vulnera-advisor"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 description = "Aggregates security advisories from GHSA, NVD, OSV, CISA KEV, and more"
 license = "GPL-3.0-or-later"
@@ -24,7 +24,7 @@ chrono = { version = "0.4", features = ["serde"] }
 url = "2.5"
 dotenvy = "0.15"
 zstd = "0.13"
-tempfile = "3.8"
+tempfile = "3.24.0"
 futures-util = "0.3"
 anyhow = "1.0.100"
 async-trait = "0.1.89"

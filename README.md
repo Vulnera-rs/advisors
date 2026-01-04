@@ -29,6 +29,7 @@ This project is an open source contribution from the Vulnera organization, dedic
 - **Efficient Storage**: Redis/DragonflyDB backend with zstd compression
 - **Version Matching**: SemVer-aware vulnerability matching
 - **Caching**: Automatic caching for OSS Index queries with configurable TTL
+- **Remediation Suggestions**: Safe version recommendations with upgrade impact classification
 
 ## Installation
 
@@ -36,7 +37,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-vulnera-advisors = "0.1.4"
+vulnera-advisors = "0.1.5"
 ```
 
 ## Quick Start
@@ -124,6 +125,54 @@ let options = MatchOptions {
 
 let vulns = manager.matches_with_options("npm", "lodash", "4.17.20", &options).await?;
 ```
+
+## Remediation Suggestions
+
+Get safe version recommendations when vulnerabilities are detected:
+
+```rust
+use vulnera_advisors::{VulnerabilityManager, PackageRegistry};
+
+// Get remediation suggestions using advisory data
+let remediation = manager.suggest_remediation("npm", "lodash", "4.17.20").await?;
+
+if let Some(nearest) = &remediation.nearest_safe {
+    println!("Nearest safe version: {}", nearest);
+    println!("Upgrade impact: {:?}", remediation.upgrade_impact);
+}
+
+if let Some(latest) = &remediation.latest_safe {
+    println!("Latest safe version: {}", latest);
+}
+
+// Enhanced: Use package registry for complete version list
+let registry = PackageRegistry::new();
+let remediation = manager
+    .suggest_remediation_with_registry("npm", "lodash", "4.17.20", &registry)
+    .await?;
+```
+
+### Remediation Response Format
+
+```json
+{
+  "ecosystem": "npm",
+  "package": "lodash",
+  "current_version": "4.17.20",
+  "nearest_safe": "4.17.21",
+  "latest_safe": "4.18.2",
+  "upgrade_impact": "patch",
+  "vulnerabilities": ["CVE-2021-23337", "GHSA-xxxx-xxxx-xxxx"]
+}
+```
+
+### Upgrade Impact Classification
+
+| Impact | Description |
+|--------|-------------|
+| `patch` | Bug fix only (x.y.Z) |
+| `minor` | New features, backward compatible (x.Y.z) |
+| `major` | Breaking changes (X.y.z) |
 
 ## Environment Variables
 
