@@ -1279,7 +1279,7 @@ impl VulnerabilityManager {
     ///
     /// # Returns
     ///
-    /// A [`Remediation`] containing safe version suggestions and upgrade impact.
+    /// A [`crate::remediation::Remediation`] containing safe version suggestions and upgrade impact.
     ///
     /// # Example
     ///
@@ -1315,7 +1315,7 @@ impl VulnerabilityManager {
 
     /// Get remediation suggestions with registry lookup for all available versions.
     ///
-    /// This is an enhanced version of [`suggest_remediation`] that fetches
+    /// This is an enhanced version of [`Self::suggest_remediation`] that fetches
     /// available versions from package registries to provide more complete
     /// upgrade suggestions.
     ///
