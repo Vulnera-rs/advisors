@@ -16,7 +16,7 @@ use serde::{Deserialize, Deserializer};
 use std::collections::HashSet;
 use std::num::NonZeroU32;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// Custom deserializer for NVD datetime format (e.g., "2024-01-15T10:30:00.000")
 fn deserialize_nvd_datetime<'de, D>(deserializer: D) -> std::result::Result<DateTime<Utc>, D::Error>
@@ -164,7 +164,7 @@ impl AdvisorySource for NVDSource {
             // Wait for rate limiter
             self.limiter.until_ready().await;
 
-            info!("Fetching NVD data from startIndex={}", start_index);
+            debug!("Fetching NVD data from startIndex={}", start_index);
 
             let mut request = self.client.get(&url);
             if let Some(key) = &self.api_key {

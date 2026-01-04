@@ -74,18 +74,21 @@ impl SyncObserver for TracingSyncObserver {
     }
 
     fn on_source_start(&self, source_name: &str) {
-        // We handle the "Syncing source..." log inside the manager logic usually,
-        // but let's centralize it here if possible, or support it.
-        // For now, let's just log at debug to avoid double logging if we keep old logs,
-        // but the plan is to REPLACE old logging.
-        info!("Syncing {}...", source_name);
+        debug!("Syncing {}...", source_name);
     }
 
     fn on_source_success(&self, source_name: &str, count: usize) {
-        info!(
-            "Successfully synced {} advisories from {}",
-            count, source_name
-        );
+        if count > 0 {
+            info!(
+                "Successfully synced {} advisories from {}",
+                count, source_name
+            );
+        } else {
+            debug!(
+                "Successfully synced {} advisories from {}",
+                count, source_name
+            );
+        }
     }
 
     fn on_source_error(&self, source_name: &str, error: &crate::error::AdvisoryError) {
@@ -472,14 +475,14 @@ impl VulnerabilityManager {
 
     /// Sync enrichment data with optional extra CVE IDs to broaden EPSS coverage.
     pub async fn sync_enrichment_with_cves(&self, extra_cves: &[String]) -> Result<()> {
-        info!("Syncing enrichment data (KEV, EPSS)...");
+        debug!("Syncing enrichment data (KEV, EPSS)...");
 
         let mut enrichment: HashMap<String, EnrichmentData> = HashMap::new();
 
         // Sync KEV data
         match self.kev_source.fetch_catalog().await {
             Ok(kev_entries) => {
-                info!("Processing {} KEV entries", kev_entries.len());
+                debug!("Processing {} KEV entries", kev_entries.len());
                 for (cve_id, entry) in kev_entries {
                     let data = enrichment
                         .entry(cve_id.clone())

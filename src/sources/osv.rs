@@ -9,7 +9,7 @@ use std::io::Read;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 /// Maximum concurrent ecosystem syncs
 const MAX_CONCURRENT_ECOSYSTEMS: usize = 4;
@@ -65,7 +65,7 @@ impl AdvisorySource for OSVSource {
 impl OSVSource {
     async fn fetch_internal(&self, since: Option<DateTime<Utc>>) -> Result<Vec<Advisory>> {
         let ecosystems = if self.ecosystems.is_empty() {
-            info!("No ecosystems specified, fetching list from OSV...");
+            debug!("No ecosystems specified, fetching list from OSV...");
             let url = "https://osv-vulnerabilities.storage.googleapis.com/ecosystems.txt";
             let response = self.client.get(url).send().await?;
             if !response.status().is_success() {
@@ -123,13 +123,13 @@ impl OSVSource {
     ) -> Result<Vec<Advisory>> {
         // Try incremental sync first if we have a timestamp
         if let Some(cutoff) = since {
-            info!(
+            debug!(
                 "Attempting incremental sync for {} since {}",
                 ecosystem, cutoff
             );
             match Self::fetch_incremental(client, ecosystem, cutoff).await {
                 Ok(advisories) => {
-                    info!(
+                    debug!(
                         "Incremental sync for {}: {} advisories",
                         ecosystem,
                         advisories.len()
@@ -146,10 +146,10 @@ impl OSVSource {
         }
 
         // Full sync: download entire ZIP
-        info!("Performing full sync for {}", ecosystem);
+        debug!("Performing full sync for {}", ecosystem);
         match Self::fetch_full(client, ecosystem).await {
             Ok(advisories) => {
-                info!(
+                debug!(
                     "Full sync for {}: {} advisories",
                     ecosystem,
                     advisories.len()
@@ -215,7 +215,7 @@ impl OSVSource {
             }
         }
 
-        info!(
+        debug!(
             "Found {} changed advisories for {}",
             changed_ids.len(),
             ecosystem
