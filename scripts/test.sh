@@ -118,8 +118,8 @@ run_test "Unit tests" "cargo test --lib"
 # Doc tests
 run_test "Doc tests" "cargo test --doc"
 
-# CWE filtering tests (specific module)
-run_test "CWE filtering tests" "cargo test --lib tests::test_cwe"
+# CWE filtering tests (matches all tests with 'cwe' in name)
+run_test "CWE filtering tests" "cargo test --lib cwe"
 
 echo ""
 echo -e "${BLUE}=== Documentation ===${NC}"
