@@ -30,6 +30,9 @@ pub struct MatchOptions {
     pub min_severity: Option<Severity>,
     /// Include enrichment data (EPSS, KEV) in results.
     pub include_enrichment: bool,
+    /// Filter by CWE IDs (e.g., ["CWE-79", "CWE-89"]).
+    /// Only advisories with at least one matching CWE will be returned.
+    pub cwe_ids: Option<Vec<String>>,
 }
 
 /// Statistics for a sync operation.
@@ -122,6 +125,26 @@ impl MatchOptions {
     pub fn exploited_only() -> Self {
         Self {
             kev_only: true,
+            include_enrichment: true,
+            ..Default::default()
+        }
+    }
+
+    /// Create options to filter by specific CWE IDs.
+    ///
+    /// Only advisories containing at least one of the specified CWEs will match.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use vulnera_advisors::MatchOptions;
+    ///
+    /// // Filter for XSS (CWE-79) or SQL Injection (CWE-89)
+    /// let options = MatchOptions::with_cwes(vec!["CWE-79".to_string(), "CWE-89".to_string()]);
+    /// ```
+    pub fn with_cwes(cwe_ids: Vec<String>) -> Self {
+        Self {
+            cwe_ids: Some(cwe_ids),
             include_enrichment: true,
             ..Default::default()
         }
@@ -1060,7 +1083,69 @@ impl VulnerabilityManager {
             }
         }
 
+        // Check CWE filter
+        if let Some(ref filter_cwes) = options.cwe_ids {
+            if !filter_cwes.is_empty() {
+                let advisory_cwes = Self::extract_cwes_from_advisory(advisory);
+                // Normalize both filter CWEs and advisory CWEs for consistent matching
+                let normalized_filter: Vec<String> = filter_cwes
+                    .iter()
+                    .map(|c| Self::normalize_cwe_id(c))
+                    .collect();
+                let normalized_advisory: Vec<String> = advisory_cwes
+                    .iter()
+                    .map(|c| Self::normalize_cwe_id(c))
+                    .collect();
+                // Advisory must have at least one matching CWE
+                let has_match = normalized_filter
+                    .iter()
+                    .any(|cwe| normalized_advisory.iter().any(|ac| ac == cwe));
+                if !has_match {
+                    return false;
+                }
+            }
+        }
+
         true
+    }
+
+    /// Normalize a CWE identifier to uppercase "CWE-XXX" format.
+    ///
+    /// Handles various input formats:
+    /// - "79" → "CWE-79"
+    /// - "cwe-79" → "CWE-79"
+    /// - "CWE-79" → "CWE-79"
+    fn normalize_cwe_id(cwe: &str) -> String {
+        let trimmed = cwe.trim();
+        let upper = trimmed.to_uppercase();
+
+        if upper.starts_with("CWE-") {
+            upper
+        } else {
+            format!("CWE-{}", trimmed)
+        }
+    }
+
+    /// Extract CWE identifiers from an advisory.
+    ///
+    /// CWEs may be stored in `database_specific.cwe_ids` (from OSS Index and some OSV sources).
+    fn extract_cwes_from_advisory(advisory: &Advisory) -> Vec<String> {
+        let mut cwes = Vec::new();
+
+        // Check database_specific.cwe_ids (OSS Index, some OSV sources)
+        if let Some(ref db_specific) = advisory.database_specific {
+            if let Some(cwe_ids) = db_specific.get("cwe_ids") {
+                if let Some(arr) = cwe_ids.as_array() {
+                    for cwe in arr {
+                        if let Some(s) = cwe.as_str() {
+                            cwes.push(s.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        cwes
     }
 
     /// Fetch live EPSS scores for CVEs (not from cache).
@@ -1426,5 +1511,288 @@ impl VulnerabilityManager {
         }
 
         map
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{Advisory, Enrichment, Severity};
+
+    /// Helper to create a test advisory with optional CWEs in database_specific
+    fn create_advisory_with_cwes(id: &str, cwes: Option<Vec<&str>>) -> Advisory {
+        let database_specific = cwes.map(|cwe_list| {
+            serde_json::json!({
+                "cwe_ids": cwe_list
+            })
+        });
+
+        Advisory {
+            id: id.to_string(),
+            summary: Some("Test advisory".to_string()),
+            details: None,
+            affected: vec![],
+            references: vec![],
+            published: None,
+            modified: None,
+            aliases: None,
+            database_specific,
+            enrichment: None,
+        }
+    }
+
+    /// Helper to create a test advisory with enrichment data
+    fn create_advisory_with_enrichment(id: &str, severity: Severity, is_kev: bool) -> Advisory {
+        Advisory {
+            id: id.to_string(),
+            summary: Some("Test advisory".to_string()),
+            details: None,
+            affected: vec![],
+            references: vec![],
+            published: None,
+            modified: None,
+            aliases: None,
+            database_specific: None,
+            enrichment: Some(Enrichment {
+                cvss_v3_severity: Some(severity),
+                is_kev,
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn test_match_options_default() {
+        let options = MatchOptions::default();
+        assert!(options.cwe_ids.is_none());
+        assert!(options.min_cvss.is_none());
+        assert!(!options.kev_only);
+    }
+
+    #[test]
+    fn test_match_options_with_cwes() {
+        let options = MatchOptions::with_cwes(vec!["CWE-79".to_string(), "CWE-89".to_string()]);
+        assert!(options.cwe_ids.is_some());
+        let cwes = options.cwe_ids.unwrap();
+        assert_eq!(cwes.len(), 2);
+        assert!(cwes.contains(&"CWE-79".to_string()));
+        assert!(cwes.contains(&"CWE-89".to_string()));
+        assert!(options.include_enrichment);
+    }
+
+    #[test]
+    fn test_extract_cwes_from_advisory_with_cwes() {
+        let advisory = create_advisory_with_cwes("CVE-2024-1234", Some(vec!["CWE-79", "CWE-89"]));
+        let cwes = VulnerabilityManager::extract_cwes_from_advisory(&advisory);
+        assert_eq!(cwes.len(), 2);
+        assert!(cwes.contains(&"CWE-79".to_string()));
+        assert!(cwes.contains(&"CWE-89".to_string()));
+    }
+
+    #[test]
+    fn test_extract_cwes_from_advisory_no_cwes() {
+        let advisory = create_advisory_with_cwes("CVE-2024-1234", None);
+        let cwes = VulnerabilityManager::extract_cwes_from_advisory(&advisory);
+        assert!(cwes.is_empty());
+    }
+
+    #[test]
+    fn test_extract_cwes_from_advisory_empty_cwes() {
+        let advisory = create_advisory_with_cwes("CVE-2024-1234", Some(vec![]));
+        let cwes = VulnerabilityManager::extract_cwes_from_advisory(&advisory);
+        assert!(cwes.is_empty());
+    }
+
+    #[test]
+    fn test_cwe_filter_case_insensitive() {
+        // Test that CWE matching is case-insensitive
+        let advisory = create_advisory_with_cwes("CVE-2024-1234", Some(vec!["cwe-79"]));
+
+        // Create options with uppercase CWE
+        let options = MatchOptions::with_cwes(vec!["CWE-79".to_string()]);
+
+        // Extract CWEs
+        let advisory_cwes = VulnerabilityManager::extract_cwes_from_advisory(&advisory);
+
+        // Check case-insensitive matching
+        let filter_cwes = options.cwe_ids.as_ref().unwrap();
+        let has_match = filter_cwes
+            .iter()
+            .any(|cwe| advisory_cwes.iter().any(|ac| ac.eq_ignore_ascii_case(cwe)));
+        assert!(has_match, "CWE matching should be case-insensitive");
+    }
+
+    #[test]
+    fn test_cwe_filter_no_match() {
+        let advisory = create_advisory_with_cwes("CVE-2024-1234", Some(vec!["CWE-79"]));
+
+        // Create options filtering for a different CWE
+        let options = MatchOptions::with_cwes(vec!["CWE-89".to_string()]);
+
+        let advisory_cwes = VulnerabilityManager::extract_cwes_from_advisory(&advisory);
+        let filter_cwes = options.cwe_ids.as_ref().unwrap();
+        let has_match = filter_cwes
+            .iter()
+            .any(|cwe| advisory_cwes.iter().any(|ac| ac.eq_ignore_ascii_case(cwe)));
+        assert!(!has_match, "Should not match when CWEs don't overlap");
+    }
+
+    #[test]
+    fn test_cwe_filter_partial_match() {
+        // Advisory has multiple CWEs, filter matches one of them
+        let advisory =
+            create_advisory_with_cwes("CVE-2024-1234", Some(vec!["CWE-79", "CWE-352", "CWE-94"]));
+
+        let options = MatchOptions::with_cwes(vec!["CWE-89".to_string(), "CWE-79".to_string()]);
+
+        let advisory_cwes = VulnerabilityManager::extract_cwes_from_advisory(&advisory);
+        let filter_cwes = options.cwe_ids.as_ref().unwrap();
+        let has_match = filter_cwes
+            .iter()
+            .any(|cwe| advisory_cwes.iter().any(|ac| ac.eq_ignore_ascii_case(cwe)));
+        assert!(has_match, "Should match when at least one CWE overlaps");
+    }
+
+    #[test]
+    fn test_match_options_empty_cwe_list() {
+        // Empty CWE list should not filter anything
+        let options = MatchOptions {
+            cwe_ids: Some(vec![]),
+            ..Default::default()
+        };
+
+        // The filter check should pass when cwe_ids list is empty
+        assert!(options.cwe_ids.as_ref().is_none_or(|v| v.is_empty()));
+    }
+
+    #[test]
+    fn test_match_options_combined_filters() {
+        // Test that CWE filter can be combined with other filters
+        let options = MatchOptions {
+            cwe_ids: Some(vec!["CWE-79".to_string()]),
+            min_severity: Some(Severity::High),
+            kev_only: true,
+            include_enrichment: true,
+            ..Default::default()
+        };
+
+        assert!(options.cwe_ids.is_some());
+        assert_eq!(options.min_severity, Some(Severity::High));
+        assert!(options.kev_only);
+    }
+
+    #[test]
+    fn test_normalize_cwe_id_with_prefix() {
+        assert_eq!(VulnerabilityManager::normalize_cwe_id("CWE-79"), "CWE-79");
+        assert_eq!(VulnerabilityManager::normalize_cwe_id("cwe-79"), "CWE-79");
+        assert_eq!(VulnerabilityManager::normalize_cwe_id("Cwe-89"), "CWE-89");
+    }
+
+    #[test]
+    fn test_normalize_cwe_id_bare_number() {
+        assert_eq!(VulnerabilityManager::normalize_cwe_id("79"), "CWE-79");
+        assert_eq!(VulnerabilityManager::normalize_cwe_id("89"), "CWE-89");
+        assert_eq!(VulnerabilityManager::normalize_cwe_id("352"), "CWE-352");
+    }
+
+    #[test]
+    fn test_normalize_cwe_id_with_whitespace() {
+        assert_eq!(VulnerabilityManager::normalize_cwe_id(" CWE-79 "), "CWE-79");
+        assert_eq!(VulnerabilityManager::normalize_cwe_id(" 79 "), "CWE-79");
+    }
+
+    #[test]
+    fn test_cwe_filter_bare_id_matches_prefixed() {
+        // User filters with bare "79", advisory has "CWE-79"
+        let advisory = create_advisory_with_cwes("CVE-2024-1234", Some(vec!["CWE-79"]));
+        let advisory_cwes = VulnerabilityManager::extract_cwes_from_advisory(&advisory);
+
+        let filter_cwes = ["79".to_string()];
+        let normalized_filter: Vec<String> = filter_cwes
+            .iter()
+            .map(|c| VulnerabilityManager::normalize_cwe_id(c))
+            .collect();
+        let normalized_advisory: Vec<String> = advisory_cwes
+            .iter()
+            .map(|c| VulnerabilityManager::normalize_cwe_id(c))
+            .collect();
+
+        let has_match = normalized_filter
+            .iter()
+            .any(|cwe| normalized_advisory.iter().any(|ac| ac == cwe));
+        assert!(has_match, "Bare '79' should match 'CWE-79'");
+    }
+
+    #[test]
+    fn test_cwe_filter_prefixed_matches_bare() {
+        // User filters with "CWE-79", advisory has bare "79"
+        let advisory = create_advisory_with_cwes("CVE-2024-1234", Some(vec!["79"]));
+        let advisory_cwes = VulnerabilityManager::extract_cwes_from_advisory(&advisory);
+
+        let filter_cwes = ["CWE-79".to_string()];
+        let normalized_filter: Vec<String> = filter_cwes
+            .iter()
+            .map(|c| VulnerabilityManager::normalize_cwe_id(c))
+            .collect();
+        let normalized_advisory: Vec<String> = advisory_cwes
+            .iter()
+            .map(|c| VulnerabilityManager::normalize_cwe_id(c))
+            .collect();
+
+        let has_match = normalized_filter
+            .iter()
+            .any(|cwe| normalized_advisory.iter().any(|ac| ac == cwe));
+        assert!(has_match, "'CWE-79' should match bare '79'");
+    }
+
+    #[test]
+    fn test_cwe_filter_with_enrichment_severity() {
+        // Test CWE filtering works correctly with enrichment data (severity)
+        let mut advisory = create_advisory_with_enrichment("CVE-2024-1234", Severity::High, false);
+
+        // Add CWE data to the advisory
+        let mut db_specific = serde_json::Map::new();
+        db_specific.insert(
+            "cwe_ids".to_string(),
+            serde_json::json!(["CWE-79", "CWE-89"]),
+        );
+        advisory.database_specific = Some(serde_json::Value::Object(db_specific));
+
+        // Verify enrichment is present
+        assert!(advisory.enrichment.is_some());
+        assert_eq!(
+            advisory.enrichment.as_ref().unwrap().cvss_v3_severity,
+            Some(Severity::High)
+        );
+
+        // Verify CWE extraction works with enrichment
+        let cwes = VulnerabilityManager::extract_cwes_from_advisory(&advisory);
+        assert_eq!(cwes, vec!["CWE-79", "CWE-89"]);
+    }
+
+    #[test]
+    fn test_cwe_filter_with_enrichment_kev() {
+        // Test CWE filtering works correctly with KEV status
+        let mut advisory =
+            create_advisory_with_enrichment("CVE-2024-5678", Severity::Critical, true);
+
+        // Add CWE data
+        let mut db_specific = serde_json::Map::new();
+        db_specific.insert("cwe_ids".to_string(), serde_json::json!(["CWE-78"]));
+        advisory.database_specific = Some(serde_json::Value::Object(db_specific));
+
+        // Verify KEV status is present
+        assert!(advisory.enrichment.as_ref().unwrap().is_kev);
+
+        // Verify CWE extraction still works
+        let cwes = VulnerabilityManager::extract_cwes_from_advisory(&advisory);
+        assert_eq!(cwes, vec!["CWE-78"]);
+
+        // Test normalization
+        let normalized: Vec<String> = cwes
+            .iter()
+            .map(|c| VulnerabilityManager::normalize_cwe_id(c))
+            .collect();
+        assert_eq!(normalized, vec!["CWE-78"]);
     }
 }

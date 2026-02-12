@@ -103,7 +103,7 @@ let advisories = manager.query_ossindex(&purls).await?;
 
 ## Filtering Options
 
-Filter vulnerabilities by severity, EPSS score, or KEV status:
+Filter vulnerabilities by severity, EPSS score, KEV status, or CWE IDs:
 
 ```rust
 use vulnera_advisors::{MatchOptions, Severity};
@@ -114,17 +114,44 @@ let options = MatchOptions::high_severity();
 // Only actively exploited (KEV)
 let options = MatchOptions::exploited_only();
 
-// Custom filters
+// Filter by CWE IDs (e.g., XSS vulnerabilities)
+let options = MatchOptions::with_cwes(vec!["CWE-79".to_string()]);
+
+// Filter by multiple CWEs (injection vulnerabilities)
+let options = MatchOptions::with_cwes(vec![
+    "CWE-79".to_string(),  // XSS
+    "CWE-89".to_string(),  // SQL Injection
+    "CWE-78".to_string(),  // OS Command Injection
+]);
+
+// Custom filters with CWE
 let options = MatchOptions {
     min_cvss: Some(7.0),
     min_epss: Some(0.5),
     kev_only: false,
     min_severity: Some(Severity::Medium),
+    cwe_ids: Some(vec!["CWE-79".to_string(), "CWE-89".to_string()]),
     include_enrichment: true,
 };
 
 let vulns = manager.matches_with_options("npm", "lodash", "4.17.20", &options).await?;
 ```
+
+### CWE Filtering
+
+Filter advisories by Common Weakness Enumeration (CWE) identifiers:
+
+| Use Case             | CWE IDs   |
+| -------------------- | --------- |
+| Cross-Site Scripting | `CWE-79`  |
+| SQL Injection        | `CWE-89`  |
+| OS Command Injection | `CWE-78`  |
+| Path Traversal       | `CWE-22`  |
+| Deserialization      | `CWE-502` |
+| SSRF                 | `CWE-918` |
+
+CWE IDs are automatically normalized - all formats work:
+- `"CWE-79"`, `"cwe-79"`, `"79"` all match the same CWE
 
 ## Remediation Suggestions
 
@@ -168,11 +195,11 @@ let remediation = manager
 
 ### Upgrade Impact Classification
 
-| Impact | Description |
-|--------|-------------|
-| `patch` | Bug fix only (x.y.Z) |
+| Impact  | Description                               |
+| ------- | ----------------------------------------- |
+| `patch` | Bug fix only (x.y.Z)                      |
 | `minor` | New features, backward compatible (x.Y.z) |
-| `major` | Breaking changes (X.y.z) |
+| `major` | Breaking changes (X.y.z)                  |
 
 ## Environment Variables
 
