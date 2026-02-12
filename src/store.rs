@@ -248,10 +248,7 @@ impl AdvisoryStore for DragonflyStore {
             for affected in &advisory.affected {
                 let (ecosystem, package) =
                     normalize_package_key(&affected.package.ecosystem, &affected.package.name);
-                let idx_key = self.key(&format!(
-                    "idx:{}:{}",
-                    ecosystem, package
-                ));
+                let idx_key = self.key(&format!("idx:{}:{}", ecosystem, package));
                 pipe.sadd(&idx_key, &advisory.id);
             }
         }

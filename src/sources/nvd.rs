@@ -1,6 +1,9 @@
 use super::AdvisorySource;
 use crate::error::Result;
-use crate::models::{Advisory, Reference, ReferenceType};
+use crate::models::{
+    Advisory, Event, Range, RangeTranslation, RangeTranslationStatus, RangeType, Reference,
+    ReferenceType,
+};
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use cpe::cpe::Cpe;
@@ -46,11 +49,11 @@ where
     )))
 }
 
-static GHSA_REGEX: Lazy<Result<Regex, regex_lite::Error>> =
+static GHSA_REGEX: Lazy<std::result::Result<Regex, regex_lite::Error>> =
     Lazy::new(|| Regex::new(r"(?i)(GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4})"));
-static OSV_REGEX: Lazy<Result<Regex, regex_lite::Error>> =
+static OSV_REGEX: Lazy<std::result::Result<Regex, regex_lite::Error>> =
     Lazy::new(|| Regex::new(r"(?i)osv\.dev/vulnerability/([^/?#]+)"));
-static CVE_REGEX: Lazy<Result<Regex, regex_lite::Error>> =
+static CVE_REGEX: Lazy<std::result::Result<Regex, regex_lite::Error>> =
     Lazy::new(|| Regex::new(r"(?i)(CVE-\d{4}-\d{4,})"));
 
 pub struct NVDSource {
@@ -108,6 +111,57 @@ impl NVDSource {
     pub fn with_api_url(mut self, api_url: impl Into<String>) -> Self {
         self.api_url = Some(api_url.into());
         self
+    }
+
+    fn translate_cpe_match(cpe_match: &CpeMatch, cpe_version: &str) -> (Vec<Range>, Vec<String>, RangeTranslation) {
+        let mut events = Vec::new();
+        let mut versions = Vec::new();
+        let mut status = RangeTranslationStatus::Exact;
+        let mut reason: Option<String> = None;
+
+        if let Some(start) = &cpe_match.version_start_including {
+            events.push(Event::Introduced(start.clone()));
+        } else if let Some(start) = &cpe_match.version_start_excluding {
+            events.push(Event::Introduced(start.clone()));
+            status = RangeTranslationStatus::Lossy;
+            reason = Some("exclusive lower bound mapped to introduced event".to_string());
+        }
+
+        if let Some(end) = &cpe_match.version_end_excluding {
+            events.push(Event::Fixed(end.clone()));
+        } else if let Some(end) = &cpe_match.version_end_including {
+            events.push(Event::LastAffected(end.clone()));
+        }
+
+        if events.is_empty() {
+            if !cpe_version.is_empty() && cpe_version != "*" {
+                versions.push(cpe_version.to_string());
+                status = RangeTranslationStatus::Lossy;
+                reason = Some("no explicit bounds; using concrete CPE version".to_string());
+            } else {
+                status = RangeTranslationStatus::Unsupported;
+                reason = Some("no translatable NVD version bounds in CPE match".to_string());
+            }
+        }
+
+        let translation = RangeTranslation {
+            source: "NVD".to_string(),
+            raw: Some(cpe_match.criteria.clone()),
+            status,
+            reason,
+        };
+
+        let ranges = if events.is_empty() {
+            Vec::new()
+        } else {
+            vec![Range {
+                range_type: RangeType::Ecosystem,
+                events,
+                repo: None,
+            }]
+        };
+
+        (ranges, versions, translation)
     }
 }
 
@@ -227,17 +281,21 @@ impl AdvisorySource for NVDSource {
                                                 p.to_string()
                                             });
 
+                                        let (ranges, versions, range_translation) =
+                                            Self::translate_cpe_match(&cpe_match, &version);
+
                                         affected.push(crate::models::Affected {
                                             package: crate::models::Package {
                                                 ecosystem: ecosystem.to_string(),
                                                 name: product,
                                                 purl,
                                             },
-                                            ranges: vec![], // NVD ranges are complex, skipping for now
-                                            versions: vec![version],
+                                            ranges,
+                                            versions,
                                             ecosystem_specific: None,
                                             database_specific: Some(serde_json::json!({
-                                                "cpe": cpe_match.criteria
+                                                "cpe": cpe_match.criteria,
+                                                "range_translation": range_translation,
                                             })),
                                         });
                                     }
@@ -378,6 +436,14 @@ struct Node {
 struct CpeMatch {
     vulnerable: bool,
     criteria: String,
+    #[serde(default)]
+    version_start_including: Option<String>,
+    #[serde(default)]
+    version_start_excluding: Option<String>,
+    #[serde(default)]
+    version_end_including: Option<String>,
+    #[serde(default)]
+    version_end_excluding: Option<String>,
 }
 
 #[derive(Deserialize)]

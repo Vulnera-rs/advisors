@@ -67,10 +67,13 @@ pub mod version_registry;
 // Re-export main types
 pub use config::{Config, NvdConfig, OssIndexConfig, StoreConfig};
 pub use error::{AdvisoryError, Result};
-pub use manager::{MatchOptions, PackageKey, VulnerabilityManager, VulnerabilityManagerBuilder};
+pub use manager::{
+    BatchFailure, BatchFailureStage, BatchOutcome, BatchSummary, MatchOptions, PackageKey,
+    VulnerabilityManager, VulnerabilityManagerBuilder,
+};
 pub use models::{
-    Advisory, Affected, Enrichment, Event, Package, Range, RangeType, Reference, ReferenceType,
-    Severity,
+    Advisory, Affected, Enrichment, Event, Package, Range, RangeTranslation,
+    RangeTranslationStatus, RangeType, Reference, ReferenceType, Severity,
 };
 pub use store::{AdvisoryStore, DragonflyStore, EnrichmentData, HealthStatus, OssIndexCache};
 

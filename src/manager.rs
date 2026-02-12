@@ -163,6 +163,77 @@ pub struct PackageKey {
     pub version: Option<String>,
 }
 
+/// Stage where a batch query failure occurred.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchFailureStage {
+    /// Local advisory store lookup/filtering failed.
+    StoreLookup,
+    /// OSS Index enrichment query failed.
+    OssIndex,
+}
+
+/// Structured per-package failure details for batch operations.
+#[derive(Debug, Clone)]
+pub struct BatchFailure {
+    /// Package key associated with the failure.
+    pub package: PackageKey,
+    /// Stage that produced the error.
+    pub stage: BatchFailureStage,
+    /// Whether the failure is retryable.
+    pub retryable: bool,
+    /// Error message for diagnostics.
+    pub error: String,
+}
+
+/// Aggregate batch query summary counters.
+#[derive(Debug, Clone, Default)]
+pub struct BatchSummary {
+    /// Number of requested packages.
+    pub total: usize,
+    /// Number of packages with successful results.
+    pub succeeded: usize,
+    /// Number of packages that failed.
+    pub failed: usize,
+    /// Aggregated range translation status counters from returned advisories.
+    pub range_translation_statuses: HashMap<String, usize>,
+}
+
+/// Structured output for batch operations.
+#[derive(Debug, Clone)]
+pub struct BatchOutcome<T> {
+    /// Successful results keyed by package.
+    pub successes: HashMap<PackageKey, T>,
+    /// Per-package failures with stage metadata.
+    pub failures: Vec<BatchFailure>,
+    /// Aggregate counters.
+    pub summary: BatchSummary,
+}
+
+impl<T> BatchOutcome<T> {
+    fn from_parts(
+        successes: HashMap<PackageKey, T>,
+        failures: Vec<BatchFailure>,
+        total: usize,
+    ) -> Self {
+        use std::collections::HashSet;
+
+        let failed_packages: HashSet<_> = failures
+            .iter()
+            .map(|failure| failure.package.clone())
+            .collect();
+        Self {
+            summary: BatchSummary {
+                total,
+                succeeded: successes.len(),
+                failed: failed_packages.len(),
+                range_translation_statuses: HashMap::new(),
+            },
+            successes,
+            failures,
+        }
+    }
+}
+
 impl PackageKey {
     /// Create a new package key.
     pub fn new(ecosystem: impl Into<String>, name: impl Into<String>) -> Self {
@@ -336,6 +407,33 @@ pub struct VulnerabilityManager {
 }
 
 impl VulnerabilityManager {
+    fn collect_range_translation_statuses(
+        advisories_by_package: &HashMap<PackageKey, Vec<Advisory>>,
+    ) -> HashMap<String, usize> {
+        let mut counters = HashMap::new();
+
+        for advisories in advisories_by_package.values() {
+            for advisory in advisories {
+                for affected in &advisory.affected {
+                    let Some(database_specific) = &affected.database_specific else {
+                        continue;
+                    };
+                    let Some(status) = database_specific
+                        .get("range_translation")
+                        .and_then(|translation| translation.get("status"))
+                        .and_then(|status| status.as_str())
+                    else {
+                        continue;
+                    };
+
+                    *counters.entry(status.to_string()).or_insert(0) += 1;
+                }
+            }
+        }
+
+        counters
+    }
+
     /// Create a new manager from a Config.
     ///
     /// This is a convenience method. For more control, use [`VulnerabilityManagerBuilder`].
@@ -624,7 +722,7 @@ impl VulnerabilityManager {
     pub async fn query_batch(
         &self,
         packages: &[PackageKey],
-    ) -> Result<HashMap<PackageKey, Vec<Advisory>>> {
+    ) -> Result<BatchOutcome<Vec<Advisory>>> {
         use futures_util::future::join_all;
 
         let tasks: Vec<_> = packages
@@ -639,33 +737,49 @@ impl VulnerabilityManager {
                 async move {
                     let advisories = if let Some(ver) = &version {
                         // For version matching, we need the full logic
-                        let all = store.get_by_package(&ecosystem, &name).await?;
-                        let aggregated = crate::aggregator::ReportAggregator::aggregate(all);
-                        Self::filter_by_version(aggregated, &ecosystem, &name, ver)
+                        match store.get_by_package(&ecosystem, &name).await {
+                            Ok(all) => {
+                                let aggregated =
+                                    crate::aggregator::ReportAggregator::aggregate(all);
+                                Ok(Self::filter_by_version(aggregated, &ecosystem, &name, ver))
+                            }
+                            Err(e) => Err(e),
+                        }
                     } else {
-                        let all = store.get_by_package(&ecosystem, &name).await?;
-                        crate::aggregator::ReportAggregator::aggregate(all)
+                        match store.get_by_package(&ecosystem, &name).await {
+                            Ok(all) => Ok(crate::aggregator::ReportAggregator::aggregate(all)),
+                            Err(e) => Err(e),
+                        }
                     };
-                    Ok::<_, crate::error::AdvisoryError>((pkg, advisories))
+                    (pkg, advisories)
                 }
             })
             .collect();
 
         let results: Vec<_> = join_all(tasks).await;
 
-        let mut map = HashMap::new();
-        for result in results {
+        let mut successes = HashMap::new();
+        let mut failures = Vec::new();
+        for (pkg, result) in results {
             match result {
-                Ok((pkg, advisories)) => {
-                    map.insert(pkg, advisories);
+                Ok(advisories) => {
+                    successes.insert(pkg, advisories);
                 }
                 Err(e) => {
-                    warn!("Batch query error: {}", e);
+                    failures.push(BatchFailure {
+                        package: pkg,
+                        stage: BatchFailureStage::StoreLookup,
+                        retryable: e.is_retryable(),
+                        error: e.to_string(),
+                    });
                 }
             }
         }
 
-        Ok(map)
+        let mut outcome = BatchOutcome::from_parts(successes, failures, packages.len());
+        outcome.summary.range_translation_statuses =
+            Self::collect_range_translation_statuses(&outcome.successes);
+        Ok(outcome)
     }
 
     /// Filter advisories by version (static helper for concurrent batch queries)
@@ -1275,12 +1389,13 @@ impl VulnerabilityManager {
     ///
     /// # Returns
     ///
-    /// Map of package keys to their advisories.
+    /// Structured batch outcome with successful results and per-package failures.
     pub async fn query_batch_with_ossindex(
         &self,
         packages: &[PackageKey],
-    ) -> Result<HashMap<PackageKey, Vec<Advisory>>> {
-        let mut results: HashMap<PackageKey, Vec<Advisory>> = HashMap::new();
+    ) -> Result<BatchOutcome<Vec<Advisory>>> {
+        let mut successes: HashMap<PackageKey, Vec<Advisory>> = HashMap::new();
+        let mut failures: Vec<BatchFailure> = Vec::new();
 
         // Build PURLs for packages that have versions
         let (with_version, without_version): (Vec<_>, Vec<_>) =
@@ -1311,19 +1426,38 @@ impl VulnerabilityManager {
                             })
                             .cloned()
                             .collect();
-                        results.insert((*pkg).clone(), pkg_advisories);
+                        successes.insert((*pkg).clone(), pkg_advisories);
                     }
                 }
                 Err(e) => {
                     warn!("OSS Index query failed, falling back to local store: {}", e);
                     // Fallback to local store
                     for pkg in &with_version {
+                        failures.push(BatchFailure {
+                            package: (*pkg).clone(),
+                            stage: BatchFailureStage::OssIndex,
+                            retryable: e.is_retryable(),
+                            error: e.to_string(),
+                        });
                         let advisories = if let Some(version) = &pkg.version {
-                            self.matches(&pkg.ecosystem, &pkg.name, version).await?
+                            self.matches(&pkg.ecosystem, &pkg.name, version).await
                         } else {
-                            self.query(&pkg.ecosystem, &pkg.name).await?
+                            self.query(&pkg.ecosystem, &pkg.name).await
                         };
-                        results.insert((*pkg).clone(), advisories);
+
+                        match advisories {
+                            Ok(advisories) => {
+                                successes.insert((*pkg).clone(), advisories);
+                            }
+                            Err(fallback_err) => {
+                                failures.push(BatchFailure {
+                                    package: (*pkg).clone(),
+                                    stage: BatchFailureStage::StoreLookup,
+                                    retryable: fallback_err.is_retryable(),
+                                    error: fallback_err.to_string(),
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -1331,11 +1465,25 @@ impl VulnerabilityManager {
 
         // Query local store for packages without versions
         for pkg in &without_version {
-            let advisories = self.query(&pkg.ecosystem, &pkg.name).await?;
-            results.insert((*pkg).clone(), advisories);
+            match self.query(&pkg.ecosystem, &pkg.name).await {
+                Ok(advisories) => {
+                    successes.insert((*pkg).clone(), advisories);
+                }
+                Err(e) => {
+                    failures.push(BatchFailure {
+                        package: (*pkg).clone(),
+                        stage: BatchFailureStage::StoreLookup,
+                        retryable: e.is_retryable(),
+                        error: e.to_string(),
+                    });
+                }
+            }
         }
 
-        Ok(results)
+        let mut outcome = BatchOutcome::from_parts(successes, failures, packages.len());
+        outcome.summary.range_translation_statuses =
+            Self::collect_range_translation_statuses(&outcome.successes);
+        Ok(outcome)
     }
 
     /// Invalidate cached OSS Index results for specific PURLs.

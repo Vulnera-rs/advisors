@@ -3,8 +3,8 @@
 //! This module provides a trait and implementation for querying package registries
 //! across various ecosystems to get a list of all available versions for a package.
 
-use crate::error::{AdvisoryError, Result};
 use crate::ecosystem::canonicalize_ecosystem;
+use crate::error::{AdvisoryError, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::collections::HashMap;

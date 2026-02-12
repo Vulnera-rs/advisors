@@ -1,7 +1,8 @@
 use super::AdvisorySource;
 use crate::error::{AdvisoryError, Result};
 use crate::models::{
-    Advisory, Affected, Event, Package, Range, RangeType, Reference, ReferenceType,
+    Advisory, Affected, Event, Package, Range, RangeTranslation, RangeTranslationStatus,
+    RangeType, Reference, ReferenceType,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -43,6 +44,90 @@ impl GHSASource {
     pub fn with_api_url(mut self, url: String) -> Self {
         self.api_url = url;
         self
+    }
+
+    fn translate_vulnerable_range(raw: &str, fixed: Option<&str>) -> (Vec<Event>, RangeTranslation) {
+        let range = raw.trim();
+        if range.is_empty() {
+            let translation = RangeTranslation {
+                source: "GHSA".to_string(),
+                raw: Some(raw.to_string()),
+                status: RangeTranslationStatus::Invalid,
+                reason: Some("empty vulnerableVersionRange".to_string()),
+            };
+            return (Vec::new(), translation);
+        }
+
+        let mut introduced: Option<String> = None;
+        let mut fixed_event: Option<String> = None;
+        let mut last_affected: Option<String> = None;
+        let mut status = RangeTranslationStatus::Exact;
+        let mut reason: Option<String> = None;
+
+        for part in range.split(',').map(|p| p.trim()).filter(|p| !p.is_empty()) {
+            if let Some(value) = part.strip_prefix(">=") {
+                introduced = Some(value.trim().to_string());
+            } else if let Some(value) = part.strip_prefix("<=") {
+                last_affected = Some(value.trim().to_string());
+            } else if let Some(value) = part.strip_prefix('>') {
+                introduced = Some(value.trim().to_string());
+                status = RangeTranslationStatus::Lossy;
+                reason = Some("exclusive lower bound mapped to introduced event".to_string());
+            } else if let Some(value) = part.strip_prefix("<") {
+                fixed_event = Some(value.trim().to_string());
+            } else if let Some(value) = part.strip_prefix('=') {
+                introduced = Some(value.trim().to_string());
+                last_affected = Some(value.trim().to_string());
+            } else {
+                status = RangeTranslationStatus::Unsupported;
+                reason = Some(format!("unsupported comparator segment: {part}"));
+            }
+        }
+
+        if matches!(status, RangeTranslationStatus::Unsupported)
+            && introduced.is_none()
+            && fixed_event.is_none()
+            && last_affected.is_none()
+        {
+            let translation = RangeTranslation {
+                source: "GHSA".to_string(),
+                raw: Some(raw.to_string()),
+                status,
+                reason,
+            };
+            return (Vec::new(), translation);
+        }
+
+        let mut events = Vec::new();
+        if let Some(intro) = introduced {
+            events.push(Event::Introduced(intro));
+        } else {
+            events.push(Event::Introduced("0".to_string()));
+            if matches!(status, RangeTranslationStatus::Exact) {
+                status = RangeTranslationStatus::Lossy;
+                reason = Some("missing lower bound; defaulted to introduced=0".to_string());
+            }
+        }
+
+        if let Some(fixed) = fixed_event {
+            events.push(Event::Fixed(fixed));
+        } else if let Some(last) = last_affected {
+            events.push(Event::LastAffected(last));
+        } else if let Some(fixed) = fixed {
+            events.push(Event::Fixed(fixed.to_string()));
+            if matches!(status, RangeTranslationStatus::Exact) {
+                status = RangeTranslationStatus::Lossy;
+                reason = Some("missing upper bound; used firstPatchedVersion".to_string());
+            }
+        }
+
+        let translation = RangeTranslation {
+            source: "GHSA".to_string(),
+            raw: Some(raw.to_string()),
+            status,
+            reason,
+        };
+        (events, translation)
     }
 }
 
@@ -175,6 +260,13 @@ impl AdvisorySource for GHSASource {
 
                     let mut affected = Vec::new();
                     for vuln in advisory_node.vulnerabilities.nodes {
+                        let fixed = vuln
+                            .first_patched_version
+                            .as_ref()
+                            .map(|v| v.identifier.as_str());
+                        let (events, translation) =
+                            Self::translate_vulnerable_range(&vuln.vulnerable_version_range, fixed);
+
                         affected.push(Affected {
                             package: Package {
                                 ecosystem: vuln.package.ecosystem,
@@ -183,21 +275,16 @@ impl AdvisorySource for GHSASource {
                             },
                             ranges: vec![Range {
                                 range_type: RangeType::Ecosystem,
-                                events: vec![
-                                    Event::Introduced("0".to_string()),
-                                    Event::Fixed(
-                                        vuln.first_patched_version
-                                            .map(|v| v.identifier)
-                                            .unwrap_or_else(|| "0.0.0".to_string()),
-                                    ),
-                                ],
+                                events,
                                 repo: None,
                             }],
                             versions: vec![],
                             ecosystem_specific: Some(json!({
                                 "vulnerable_range": vuln.vulnerable_version_range
                             })),
-                            database_specific: None,
+                            database_specific: Some(json!({
+                                "range_translation": translation,
+                            })),
                         });
                     }
 

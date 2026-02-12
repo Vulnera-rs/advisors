@@ -65,6 +65,9 @@ mod tests {
     fn test_normalize_package_name() {
         assert_eq!(normalize_package_name("npm", " Lodash "), "lodash");
         assert_eq!(normalize_package_name("pypi", "Requests"), "requests");
-        assert_eq!(normalize_package_name("go", "golang.org/x/Mod"), "golang.org/x/Mod");
+        assert_eq!(
+            normalize_package_name("go", "golang.org/x/Mod"),
+            "golang.org/x/Mod"
+        );
     }
 }

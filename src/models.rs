@@ -102,6 +102,26 @@ pub struct Range {
     pub repo: Option<String>,
 }
 
+/// Status of translating source-specific range semantics into canonical events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RangeTranslationStatus {
+    Exact,
+    Lossy,
+    Unsupported,
+    Invalid,
+}
+
+/// Diagnostic metadata for range translation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RangeTranslation {
+    pub source: String,
+    pub raw: Option<String>,
+    pub status: RangeTranslationStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum RangeType {
