@@ -23,9 +23,9 @@ fn main() {
 
     // Test 3: Filter for multiple injection vulnerabilities
     let injection_opts = MatchOptions::with_cwes(vec![
-        "CWE-79".to_string(),  // XSS
-        "CWE-89".to_string(),  // SQL Injection
-        "CWE-78".to_string(),  // OS Command Injection
+        "CWE-79".to_string(), // XSS
+        "CWE-89".to_string(), // SQL Injection
+        "CWE-78".to_string(), // OS Command Injection
     ]);
     println!("3. Injection filter (CWE-79, CWE-89, CWE-78):");
     println!("   cwe_ids: {:?}", injection_opts.cwe_ids);
@@ -47,12 +47,12 @@ fn main() {
 
     // Test 5: OWASP Top 10 related CWEs
     let owasp_top10 = MatchOptions::with_cwes(vec![
-        "CWE-79".to_string(),   // A03: Injection (XSS)
-        "CWE-89".to_string(),   // A03: Injection (SQLi)
-        "CWE-287".to_string(),  // A07: Identification and Authentication Failures
-        "CWE-352".to_string(),  // A01: Broken Access Control (CSRF)
-        "CWE-611".to_string(),  // A05: Security Misconfiguration (XXE)
-        "CWE-502".to_string(),  // A08: Software and Data Integrity Failures
+        "CWE-79".to_string(),  // A03: Injection (XSS)
+        "CWE-89".to_string(),  // A03: Injection (SQLi)
+        "CWE-287".to_string(), // A07: Identification and Authentication Failures
+        "CWE-352".to_string(), // A01: Broken Access Control (CSRF)
+        "CWE-611".to_string(), // A05: Security Misconfiguration (XXE)
+        "CWE-502".to_string(), // A08: Software and Data Integrity Failures
     ]);
     println!("5. OWASP Top 10 related CWEs:");
     println!("   cwe_ids: {:?}", owasp_top10.cwe_ids);
@@ -62,5 +62,7 @@ fn main() {
     println!("\nTo use with VulnerabilityManager:");
     println!("  let manager = VulnerabilityManager::new(config).await?;");
     println!("  let options = MatchOptions::with_cwes(vec![\"CWE-79\".to_string()]);");
-    println!("  let xss_vulns = manager.matches_with_options(\"npm\", \"pkg\", \"1.0.0\", &options).await?;");
+    println!(
+        "  let xss_vulns = manager.matches_with_options(\"npm\", \"pkg\", \"1.0.0\", &options).await?;"
+    );
 }

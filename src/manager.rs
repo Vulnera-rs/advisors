@@ -1088,10 +1088,14 @@ impl VulnerabilityManager {
             if !filter_cwes.is_empty() {
                 let advisory_cwes = Self::extract_cwes_from_advisory(advisory);
                 // Normalize both filter CWEs and advisory CWEs for consistent matching
-                let normalized_filter: Vec<String> =
-                    filter_cwes.iter().map(|c| Self::normalize_cwe_id(c)).collect();
-                let normalized_advisory: Vec<String> =
-                    advisory_cwes.iter().map(|c| Self::normalize_cwe_id(c)).collect();
+                let normalized_filter: Vec<String> = filter_cwes
+                    .iter()
+                    .map(|c| Self::normalize_cwe_id(c))
+                    .collect();
+                let normalized_advisory: Vec<String> = advisory_cwes
+                    .iter()
+                    .map(|c| Self::normalize_cwe_id(c))
+                    .collect();
                 // Advisory must have at least one matching CWE
                 let has_match = normalized_filter
                     .iter()
@@ -1703,7 +1707,7 @@ mod tests {
         let advisory = create_advisory_with_cwes("CVE-2024-1234", Some(vec!["CWE-79"]));
         let advisory_cwes = VulnerabilityManager::extract_cwes_from_advisory(&advisory);
 
-        let filter_cwes = vec!["79".to_string()];
+        let filter_cwes = ["79".to_string()];
         let normalized_filter: Vec<String> = filter_cwes
             .iter()
             .map(|c| VulnerabilityManager::normalize_cwe_id(c))
@@ -1725,7 +1729,7 @@ mod tests {
         let advisory = create_advisory_with_cwes("CVE-2024-1234", Some(vec!["79"]));
         let advisory_cwes = VulnerabilityManager::extract_cwes_from_advisory(&advisory);
 
-        let filter_cwes = vec!["CWE-79".to_string()];
+        let filter_cwes = ["CWE-79".to_string()];
         let normalized_filter: Vec<String> = filter_cwes
             .iter()
             .map(|c| VulnerabilityManager::normalize_cwe_id(c))
@@ -1745,7 +1749,7 @@ mod tests {
     fn test_cwe_filter_with_enrichment_severity() {
         // Test CWE filtering works correctly with enrichment data (severity)
         let mut advisory = create_advisory_with_enrichment("CVE-2024-1234", Severity::High, false);
-        
+
         // Add CWE data to the advisory
         let mut db_specific = serde_json::Map::new();
         db_specific.insert(
@@ -1756,7 +1760,10 @@ mod tests {
 
         // Verify enrichment is present
         assert!(advisory.enrichment.is_some());
-        assert_eq!(advisory.enrichment.as_ref().unwrap().cvss_v3_severity, Some(Severity::High));
+        assert_eq!(
+            advisory.enrichment.as_ref().unwrap().cvss_v3_severity,
+            Some(Severity::High)
+        );
 
         // Verify CWE extraction works with enrichment
         let cwes = VulnerabilityManager::extract_cwes_from_advisory(&advisory);
@@ -1766,14 +1773,12 @@ mod tests {
     #[test]
     fn test_cwe_filter_with_enrichment_kev() {
         // Test CWE filtering works correctly with KEV status
-        let mut advisory = create_advisory_with_enrichment("CVE-2024-5678", Severity::Critical, true);
-        
+        let mut advisory =
+            create_advisory_with_enrichment("CVE-2024-5678", Severity::Critical, true);
+
         // Add CWE data
         let mut db_specific = serde_json::Map::new();
-        db_specific.insert(
-            "cwe_ids".to_string(),
-            serde_json::json!(["CWE-78"]),
-        );
+        db_specific.insert("cwe_ids".to_string(), serde_json::json!(["CWE-78"]));
         advisory.database_specific = Some(serde_json::Value::Object(db_specific));
 
         // Verify KEV status is present
