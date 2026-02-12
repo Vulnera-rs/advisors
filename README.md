@@ -141,16 +141,17 @@ let vulns = manager.matches_with_options("npm", "lodash", "4.17.20", &options).a
 
 Filter advisories by Common Weakness Enumeration (CWE) identifiers:
 
-| Use Case | CWE IDs |
-|----------|---------|
-| Cross-Site Scripting | `CWE-79` |
-| SQL Injection | `CWE-89` |
-| OS Command Injection | `CWE-78` |
-| Path Traversal | `CWE-22` |
-| Deserialization | `CWE-502` |
-| SSRF | `CWE-918` |
+| Use Case             | CWE IDs   |
+| -------------------- | --------- |
+| Cross-Site Scripting | `CWE-79`  |
+| SQL Injection        | `CWE-89`  |
+| OS Command Injection | `CWE-78`  |
+| Path Traversal       | `CWE-22`  |
+| Deserialization      | `CWE-502` |
+| SSRF                 | `CWE-918` |
 
-CWE matching is case-insensitive (`cwe-79` matches `CWE-79`).
+CWE IDs are automatically normalized - all formats work:
+- `"CWE-79"`, `"cwe-79"`, `"79"` all match the same CWE
 
 ## Remediation Suggestions
 
@@ -194,11 +195,11 @@ let remediation = manager
 
 ### Upgrade Impact Classification
 
-| Impact | Description |
-|--------|-------------|
-| `patch` | Bug fix only (x.y.Z) |
+| Impact  | Description                               |
+| ------- | ----------------------------------------- |
+| `patch` | Bug fix only (x.y.Z)                      |
 | `minor` | New features, backward compatible (x.Y.z) |
-| `major` | Breaking changes (X.y.z) |
+| `major` | Breaking changes (X.y.z)                  |
 
 ## Environment Variables
 

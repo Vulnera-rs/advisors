@@ -1087,10 +1087,15 @@ impl VulnerabilityManager {
         if let Some(ref filter_cwes) = options.cwe_ids {
             if !filter_cwes.is_empty() {
                 let advisory_cwes = Self::extract_cwes_from_advisory(advisory);
+                // Normalize both filter CWEs and advisory CWEs for consistent matching
+                let normalized_filter: Vec<String> =
+                    filter_cwes.iter().map(|c| Self::normalize_cwe_id(c)).collect();
+                let normalized_advisory: Vec<String> =
+                    advisory_cwes.iter().map(|c| Self::normalize_cwe_id(c)).collect();
                 // Advisory must have at least one matching CWE
-                let has_match = filter_cwes
+                let has_match = normalized_filter
                     .iter()
-                    .any(|cwe| advisory_cwes.iter().any(|ac| ac.eq_ignore_ascii_case(cwe)));
+                    .any(|cwe| normalized_advisory.iter().any(|ac| ac == cwe));
                 if !has_match {
                     return false;
                 }
@@ -1098,6 +1103,23 @@ impl VulnerabilityManager {
         }
 
         true
+    }
+
+    /// Normalize a CWE identifier to uppercase "CWE-XXX" format.
+    ///
+    /// Handles various input formats:
+    /// - "79" → "CWE-79"
+    /// - "cwe-79" → "CWE-79"
+    /// - "CWE-79" → "CWE-79"
+    fn normalize_cwe_id(cwe: &str) -> String {
+        let trimmed = cwe.trim();
+        let upper = trimmed.to_uppercase();
+
+        if upper.starts_with("CWE-") {
+            upper
+        } else {
+            format!("CWE-{}", trimmed)
+        }
     }
 
     /// Extract CWE identifiers from an advisory.
@@ -1654,5 +1676,69 @@ mod tests {
         assert!(options.cwe_ids.is_some());
         assert_eq!(options.min_severity, Some(Severity::High));
         assert!(options.kev_only);
+    }
+
+    #[test]
+    fn test_normalize_cwe_id_with_prefix() {
+        assert_eq!(VulnerabilityManager::normalize_cwe_id("CWE-79"), "CWE-79");
+        assert_eq!(VulnerabilityManager::normalize_cwe_id("cwe-79"), "CWE-79");
+        assert_eq!(VulnerabilityManager::normalize_cwe_id("Cwe-89"), "CWE-89");
+    }
+
+    #[test]
+    fn test_normalize_cwe_id_bare_number() {
+        assert_eq!(VulnerabilityManager::normalize_cwe_id("79"), "CWE-79");
+        assert_eq!(VulnerabilityManager::normalize_cwe_id("89"), "CWE-89");
+        assert_eq!(VulnerabilityManager::normalize_cwe_id("352"), "CWE-352");
+    }
+
+    #[test]
+    fn test_normalize_cwe_id_with_whitespace() {
+        assert_eq!(VulnerabilityManager::normalize_cwe_id(" CWE-79 "), "CWE-79");
+        assert_eq!(VulnerabilityManager::normalize_cwe_id(" 79 "), "CWE-79");
+    }
+
+    #[test]
+    fn test_cwe_filter_bare_id_matches_prefixed() {
+        // User filters with bare "79", advisory has "CWE-79"
+        let advisory = create_advisory_with_cwes("CVE-2024-1234", Some(vec!["CWE-79"]));
+        let advisory_cwes = VulnerabilityManager::extract_cwes_from_advisory(&advisory);
+
+        let filter_cwes = vec!["79".to_string()];
+        let normalized_filter: Vec<String> = filter_cwes
+            .iter()
+            .map(|c| VulnerabilityManager::normalize_cwe_id(c))
+            .collect();
+        let normalized_advisory: Vec<String> = advisory_cwes
+            .iter()
+            .map(|c| VulnerabilityManager::normalize_cwe_id(c))
+            .collect();
+
+        let has_match = normalized_filter
+            .iter()
+            .any(|cwe| normalized_advisory.iter().any(|ac| ac == cwe));
+        assert!(has_match, "Bare '79' should match 'CWE-79'");
+    }
+
+    #[test]
+    fn test_cwe_filter_prefixed_matches_bare() {
+        // User filters with "CWE-79", advisory has bare "79"
+        let advisory = create_advisory_with_cwes("CVE-2024-1234", Some(vec!["79"]));
+        let advisory_cwes = VulnerabilityManager::extract_cwes_from_advisory(&advisory);
+
+        let filter_cwes = vec!["CWE-79".to_string()];
+        let normalized_filter: Vec<String> = filter_cwes
+            .iter()
+            .map(|c| VulnerabilityManager::normalize_cwe_id(c))
+            .collect();
+        let normalized_advisory: Vec<String> = advisory_cwes
+            .iter()
+            .map(|c| VulnerabilityManager::normalize_cwe_id(c))
+            .collect();
+
+        let has_match = normalized_filter
+            .iter()
+            .any(|cwe| normalized_advisory.iter().any(|ac| ac == cwe));
+        assert!(has_match, "'CWE-79' should match bare '79'");
     }
 }
