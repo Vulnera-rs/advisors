@@ -1537,7 +1537,6 @@ mod tests {
         }
     }
 
-    #[allow(dead_code)]
     /// Helper to create a test advisory with enrichment data
     fn create_advisory_with_enrichment(id: &str, severity: Severity, is_kev: bool) -> Advisory {
         Advisory {
@@ -1740,5 +1739,55 @@ mod tests {
             .iter()
             .any(|cwe| normalized_advisory.iter().any(|ac| ac == cwe));
         assert!(has_match, "'CWE-79' should match bare '79'");
+    }
+
+    #[test]
+    fn test_cwe_filter_with_enrichment_severity() {
+        // Test CWE filtering works correctly with enrichment data (severity)
+        let mut advisory = create_advisory_with_enrichment("CVE-2024-1234", Severity::High, false);
+        
+        // Add CWE data to the advisory
+        let mut db_specific = serde_json::Map::new();
+        db_specific.insert(
+            "cwe_ids".to_string(),
+            serde_json::json!(["CWE-79", "CWE-89"]),
+        );
+        advisory.database_specific = Some(serde_json::Value::Object(db_specific));
+
+        // Verify enrichment is present
+        assert!(advisory.enrichment.is_some());
+        assert_eq!(advisory.enrichment.as_ref().unwrap().cvss_v3_severity, Some(Severity::High));
+
+        // Verify CWE extraction works with enrichment
+        let cwes = VulnerabilityManager::extract_cwes_from_advisory(&advisory);
+        assert_eq!(cwes, vec!["CWE-79", "CWE-89"]);
+    }
+
+    #[test]
+    fn test_cwe_filter_with_enrichment_kev() {
+        // Test CWE filtering works correctly with KEV status
+        let mut advisory = create_advisory_with_enrichment("CVE-2024-5678", Severity::Critical, true);
+        
+        // Add CWE data
+        let mut db_specific = serde_json::Map::new();
+        db_specific.insert(
+            "cwe_ids".to_string(),
+            serde_json::json!(["CWE-78"]),
+        );
+        advisory.database_specific = Some(serde_json::Value::Object(db_specific));
+
+        // Verify KEV status is present
+        assert!(advisory.enrichment.as_ref().unwrap().is_kev);
+
+        // Verify CWE extraction still works
+        let cwes = VulnerabilityManager::extract_cwes_from_advisory(&advisory);
+        assert_eq!(cwes, vec!["CWE-78"]);
+
+        // Test normalization
+        let normalized: Vec<String> = cwes
+            .iter()
+            .map(|c| VulnerabilityManager::normalize_cwe_id(c))
+            .collect();
+        assert_eq!(normalized, vec!["CWE-78"]);
     }
 }
