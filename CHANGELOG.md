@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.7] - 2026-02-13
+
+### Added
+
+- **CWE Filtering Support**: Comprehensive CWE ID filtering in `MatchOptions`.
+  - Added `cwe_ids` field and `with_cwes()` constructor to `MatchOptions`.
+  - Implemented `normalize_cwe_id()` to standardize formats (e.g., "79" or "cwe-79" → "CWE-79").
+  - New helpers for CWE extraction from canonical advisories.
+- **Git Commit Range Matching**: Support for deterministic Git revision boundaries in vulnerability checks.
+  - Implemented `matches_git_range()` for comparing Git hashes.
+  - Support for `introduced` and `fixed` events using Git commit SHAs.
+- **Ecosystem Canonicalization**: New `ecosystem` module for streamlined handling of ecosystem aliases and normalization.
+  - `canonicalize_ecosystem()`: Maps common aliases (e.g., "python", "pip") to canonical names (e.g., "pypi").
+  - `normalize_package_name()`: Stable package name normalization based on ecosystem rules.
+  - `normalize_package_key()`: Unified key generation for cache and indexing.
+- **Batch Processing Enhancements**: Structured outcomes and improved range translation support for batch advisory queries.
+
+### Changed
+
+- **Regex Robustness**: Replaced static regex panics with `Lazy<Result<Regex, ...>>` initialization.
+  - Guards against runtime failures if regex compilation fails in `aggregator` or `NVD` sources.
+- **Improved Version Registry**: Updated `PackageRegistry` to utilize the new canonicalization logic for better consistency across .NET, PHP, and Ruby.
+- **Code Style**: Normalized function signatures and long parameter lists across core modules.
+
+### Fixed
+
+- **Advisory Parsing**: Fixed potential panics during OSV -> CVE detection by validating regex availability.
+- **Clippy & Formatting**: Resolved `useless_vec` warnings and standardized formatting.
+
 ## [0.1.6] - 2026-01-04
 
 ### Added
