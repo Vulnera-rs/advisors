@@ -818,7 +818,11 @@ impl VulnerabilityManager {
                                     return true;
                                 }
                             }
-                            RangeType::Git => {}
+                            RangeType::Git => {
+                                if Self::matches_git_range(version, &range.events) {
+                                    return true;
+                                }
+                            }
                         }
                     }
                 }
@@ -878,7 +882,10 @@ impl VulnerabilityManager {
                             }
                         }
                         RangeType::Git => {
-                            // Git ranges require commit hash comparison, skip for now
+                            if Self::matches_git_range(version, &range.events) {
+                                is_vulnerable = true;
+                                break;
+                            }
                         }
                     }
                 }
@@ -1065,6 +1072,57 @@ impl VulnerabilityManager {
                 (None, _) => true,
             }
         })
+    }
+
+    fn normalize_git_revision(value: &str) -> String {
+        value
+            .trim()
+            .trim_start_matches("refs/")
+            .trim_start_matches("heads/")
+            .trim_start_matches("tags/")
+            .to_ascii_lowercase()
+    }
+
+    /// Best-effort Git range matching for deterministic cases.
+    ///
+    /// Full ancestry checks are not possible without repository graph context, so this
+    /// matcher handles exact event-boundary commits and unbounded introduced ranges.
+    fn matches_git_range(version: &str, events: &[Event]) -> bool {
+        let target = Self::normalize_git_revision(version);
+        if target.is_empty() {
+            return false;
+        }
+
+        let mut has_unbounded_start = false;
+        let mut has_closing_boundary = false;
+
+        for event in events {
+            match event {
+                Event::Introduced(commit) => {
+                    let normalized = Self::normalize_git_revision(commit);
+                    if normalized == "0" || normalized == "*" {
+                        has_unbounded_start = true;
+                        continue;
+                    }
+                    if normalized == target {
+                        return true;
+                    }
+                }
+                Event::LastAffected(commit) => {
+                    if Self::normalize_git_revision(commit) == target {
+                        return true;
+                    }
+                }
+                Event::Fixed(commit) | Event::Limit(commit) => {
+                    has_closing_boundary = true;
+                    if Self::normalize_git_revision(commit) == target {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        has_unbounded_start && !has_closing_boundary
     }
 
     /// Parse dotted numeric versions (e.g., "1.2.10"). Non-numeric segments cause failure.
@@ -1949,5 +2007,28 @@ mod tests {
             .map(|c| VulnerabilityManager::normalize_cwe_id(c))
             .collect();
         assert_eq!(normalized, vec!["CWE-78"]);
+    }
+
+    #[test]
+    fn test_matches_git_range_exact_boundary_commits() {
+        let events = vec![
+            Event::Introduced("abc123".to_string()),
+            Event::Fixed("def456".to_string()),
+        ];
+
+        assert!(VulnerabilityManager::matches_git_range("abc123", &events));
+        assert!(!VulnerabilityManager::matches_git_range("def456", &events));
+    }
+
+    #[test]
+    fn test_matches_git_range_unbounded_introduced() {
+        let events = vec![Event::Introduced("0".to_string())];
+        assert!(VulnerabilityManager::matches_git_range("deadbeef", &events));
+
+        let closed_events = vec![
+            Event::Introduced("0".to_string()),
+            Event::Limit("ffff".to_string()),
+        ];
+        assert!(!VulnerabilityManager::matches_git_range("deadbeef", &closed_events));
     }
 }
