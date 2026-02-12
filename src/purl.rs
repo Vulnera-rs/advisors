@@ -26,6 +26,8 @@ use std::collections::hash_map::DefaultHasher;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
+use crate::ecosystem::canonicalize_ecosystem;
+
 /// Known valid PURL ecosystem types.
 ///
 /// This list includes all ecosystems supported by OSS Index and other
@@ -215,6 +217,16 @@ impl Purl {
 
     /// Map common ecosystem names to PURL types.
     fn map_ecosystem(ecosystem: &str) -> String {
+        if let Some(canonical) = canonicalize_ecosystem(ecosystem) {
+            return match canonical {
+                "cargo" => "cargo".to_string(),
+                "go" => "golang".to_string(),
+                "packagist" => "composer".to_string(),
+                "rubygems" => "gem".to_string(),
+                other => other.to_string(),
+            };
+        }
+
         for (from, to) in ECOSYSTEM_MAPPINGS {
             if ecosystem.eq_ignore_ascii_case(from) {
                 return to.to_string();

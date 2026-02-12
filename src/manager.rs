@@ -4,6 +4,7 @@
 //! Use [`VulnerabilityManagerBuilder`] for flexible configuration.
 
 use crate::config::{Config, OssIndexConfig, StoreConfig};
+use crate::ecosystem::normalize_package_key;
 use crate::error::{AdvisoryError, Result};
 use crate::models::{Advisory, Enrichment, Event, RangeType, Severity};
 use crate::purl::Purl;
@@ -165,9 +166,10 @@ pub struct PackageKey {
 impl PackageKey {
     /// Create a new package key.
     pub fn new(ecosystem: impl Into<String>, name: impl Into<String>) -> Self {
+        let (ecosystem, name) = normalize_package_key(&ecosystem.into(), &name.into());
         Self {
-            ecosystem: ecosystem.into(),
-            name: name.into(),
+            ecosystem,
+            name,
             version: None,
         }
     }
@@ -178,9 +180,10 @@ impl PackageKey {
         name: impl Into<String>,
         version: impl Into<String>,
     ) -> Self {
+        let (ecosystem, name) = normalize_package_key(&ecosystem.into(), &name.into());
         Self {
-            ecosystem: ecosystem.into(),
-            name: name.into(),
+            ecosystem,
+            name,
             version: Some(version.into()),
         }
     }
@@ -603,7 +606,8 @@ impl VulnerabilityManager {
 
     /// Query advisories for a specific package.
     pub async fn query(&self, ecosystem: &str, package: &str) -> Result<Vec<Advisory>> {
-        let advisories = self.store.get_by_package(ecosystem, package).await?;
+        let (ecosystem, package) = normalize_package_key(ecosystem, package);
+        let advisories = self.store.get_by_package(&ecosystem, &package).await?;
         Ok(crate::aggregator::ReportAggregator::aggregate(advisories))
     }
 
@@ -671,11 +675,14 @@ impl VulnerabilityManager {
         package: &str,
         version: &str,
     ) -> Vec<Advisory> {
+        let (ecosystem, package) = normalize_package_key(ecosystem, package);
         advisories
             .into_iter()
             .filter(|advisory| {
                 for affected in &advisory.affected {
-                    if affected.package.name != package || affected.package.ecosystem != ecosystem {
+                    let (affected_ecosystem, affected_package) =
+                        normalize_package_key(&affected.package.ecosystem, &affected.package.name);
+                    if affected_package != package || affected_ecosystem != ecosystem {
                         continue;
                     }
 

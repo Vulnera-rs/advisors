@@ -4,6 +4,7 @@
 //! persisting and querying vulnerability advisories.
 
 use crate::config::StoreConfig;
+use crate::ecosystem::normalize_package_key;
 use crate::error::{AdvisoryError, Result};
 use crate::models::Advisory;
 use async_stream::try_stream;
@@ -245,9 +246,11 @@ impl AdvisoryStore for DragonflyStore {
 
             // Update index
             for affected in &advisory.affected {
+                let (ecosystem, package) =
+                    normalize_package_key(&affected.package.ecosystem, &affected.package.name);
                 let idx_key = self.key(&format!(
                     "idx:{}:{}",
-                    affected.package.ecosystem, affected.package.name
+                    ecosystem, package
                 ));
                 pipe.sadd(&idx_key, &advisory.id);
             }
@@ -276,6 +279,7 @@ impl AdvisoryStore for DragonflyStore {
     }
 
     async fn get_by_package(&self, ecosystem: &str, package: &str) -> Result<Vec<Advisory>> {
+        let (ecosystem, package) = normalize_package_key(ecosystem, package);
         let mut conn = self.get_connection().await?;
         let ids: Vec<String> = conn
             .smembers(self.key(&format!("idx:{}:{}", ecosystem, package)))
@@ -328,6 +332,7 @@ impl AdvisoryStore for DragonflyStore {
         ecosystem: &str,
         package: &str,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<Advisory>> + Send + '_>>> {
+        let (ecosystem, package) = normalize_package_key(ecosystem, package);
         let idx_key = self.key(&format!("idx:{}:{}", ecosystem, package));
 
         let stream = try_stream! {

@@ -4,6 +4,7 @@
 //! across various ecosystems to get a list of all available versions for a package.
 
 use crate::error::{AdvisoryError, Result};
+use crate::ecosystem::canonicalize_ecosystem;
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -338,7 +339,9 @@ impl PackageRegistry {
 #[async_trait]
 impl VersionRegistry for PackageRegistry {
     async fn get_versions(&self, ecosystem: &str, package: &str) -> Result<Vec<String>> {
-        let ecosystem_lower = ecosystem.to_lowercase();
+        let ecosystem_lower = canonicalize_ecosystem(ecosystem)
+            .unwrap_or(ecosystem)
+            .to_ascii_lowercase();
         debug!("Fetching versions for {} in {}", package, ecosystem_lower);
 
         match ecosystem_lower.as_str() {

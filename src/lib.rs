@@ -53,6 +53,7 @@
 
 pub mod aggregator;
 pub mod config;
+pub mod ecosystem;
 pub mod error;
 pub mod logging;
 pub mod manager;
