@@ -1,8 +1,8 @@
 use super::AdvisorySource;
 use crate::error::{AdvisoryError, Result};
 use crate::models::{
-    Advisory, Affected, Event, Package, Range, RangeTranslation, RangeTranslationStatus,
-    RangeType, Reference, ReferenceType,
+    Advisory, Affected, Event, Package, Range, RangeTranslation, RangeTranslationStatus, RangeType,
+    Reference, ReferenceType,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -46,7 +46,10 @@ impl GHSASource {
         self
     }
 
-    fn translate_vulnerable_range(raw: &str, fixed: Option<&str>) -> (Vec<Event>, RangeTranslation) {
+    fn translate_vulnerable_range(
+        raw: &str,
+        fixed: Option<&str>,
+    ) -> (Vec<Event>, RangeTranslation) {
         let range = raw.trim();
         if range.is_empty() {
             let translation = RangeTranslation {

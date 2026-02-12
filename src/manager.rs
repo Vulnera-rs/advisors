@@ -2029,6 +2029,9 @@ mod tests {
             Event::Introduced("0".to_string()),
             Event::Limit("ffff".to_string()),
         ];
-        assert!(!VulnerabilityManager::matches_git_range("deadbeef", &closed_events));
+        assert!(!VulnerabilityManager::matches_git_range(
+            "deadbeef",
+            &closed_events
+        ));
     }
 }

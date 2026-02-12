@@ -113,7 +113,10 @@ impl NVDSource {
         self
     }
 
-    fn translate_cpe_match(cpe_match: &CpeMatch, cpe_version: &str) -> (Vec<Range>, Vec<String>, RangeTranslation) {
+    fn translate_cpe_match(
+        cpe_match: &CpeMatch,
+        cpe_version: &str,
+    ) -> (Vec<Range>, Vec<String>, RangeTranslation) {
         let mut events = Vec::new();
         let mut versions = Vec::new();
         let mut status = RangeTranslationStatus::Exact;
