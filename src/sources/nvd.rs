@@ -46,11 +46,12 @@ where
     )))
 }
 
-static GHSA_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)(GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4})").unwrap());
-static OSV_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)osv\.dev/vulnerability/([^/?#]+)").unwrap());
-static CVE_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(CVE-\d{4}-\d{4,})").unwrap());
+static GHSA_REGEX: Lazy<Result<Regex, regex_lite::Error>> =
+    Lazy::new(|| Regex::new(r"(?i)(GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4})"));
+static OSV_REGEX: Lazy<Result<Regex, regex_lite::Error>> =
+    Lazy::new(|| Regex::new(r"(?i)osv\.dev/vulnerability/([^/?#]+)"));
+static CVE_REGEX: Lazy<Result<Regex, regex_lite::Error>> =
+    Lazy::new(|| Regex::new(r"(?i)(CVE-\d{4}-\d{4,})"));
 
 pub struct NVDSource {
     api_key: Option<String>,
@@ -259,16 +260,25 @@ impl AdvisorySource for NVDSource {
                 let mut alias_set: HashSet<String> = HashSet::new();
                 for r in &cve.references {
                     // GHSA: https://github.com/advisories/GHSA-xxxx-xxxx-xxxx
-                    if let Some(caps) = GHSA_REGEX.captures(&r.url) {
-                        alias_set.insert(caps[1].to_uppercase());
+                    if let Ok(ghsa_regex) = &*GHSA_REGEX {
+                        if let Some(caps) = ghsa_regex.captures(&r.url) {
+                            alias_set.insert(caps[1].to_uppercase());
+                        }
                     }
 
                     // OSV: https://osv.dev/vulnerability/<id>
-                    if let Some(caps) = OSV_REGEX.captures(&r.url) {
-                        let osv_id = caps[1].to_string();
-                        // If the OSV id looks like a CVE, don't add it here (CVE already present)
-                        if CVE_REGEX.captures(&osv_id).is_none() {
-                            alias_set.insert(osv_id);
+                    if let Ok(osv_regex) = &*OSV_REGEX {
+                        if let Some(caps) = osv_regex.captures(&r.url) {
+                            let osv_id = caps[1].to_string();
+                            // If the OSV id looks like a CVE, don't add it here (CVE already present)
+                            let is_cve = if let Ok(cve_regex) = &*CVE_REGEX {
+                                cve_regex.captures(&osv_id).is_some()
+                            } else {
+                                false
+                            };
+                            if !is_cve {
+                                alias_set.insert(osv_id);
+                            }
                         }
                     }
                 }

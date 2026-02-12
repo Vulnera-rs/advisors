@@ -8,7 +8,8 @@ use once_cell::sync::Lazy;
 use regex_lite::Regex;
 use std::collections::{HashMap, HashSet};
 
-static CVE_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(CVE-\d{4}-\d{4,})").unwrap());
+static CVE_REGEX: Lazy<Result<Regex, regex_lite::Error>> =
+    Lazy::new(|| Regex::new(r"(?i)(CVE-\d{4}-\d{4,})"));
 
 /// Aggregator for merging and deduplicating advisories.
 pub struct ReportAggregator;
@@ -47,8 +48,10 @@ impl ReportAggregator {
     /// Extract a CVE ID from a string using a compiled regex.
     pub fn extract_cve_from_string(text: &str) -> Option<String> {
         // Use a static, pre-compiled regex for performance.
-        if let Some(caps) = CVE_REGEX.captures(text) {
-            return Some(caps[1].to_uppercase());
+        if let Ok(regex) = &*CVE_REGEX {
+            if let Some(caps) = regex.captures(text) {
+                return Some(caps[1].to_uppercase());
+            }
         }
         None
     }
