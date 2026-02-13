@@ -9,7 +9,7 @@ documentation = "https://docs.rs/vulnera-advisors"
 readme = "README.md"
 keywords = ["security", "vulnerability", "advisory", "cve", "ghsa"]
 categories = ["development-tools", "database"]
-rust-version = "1.85"
+rust-version = "1.91"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
