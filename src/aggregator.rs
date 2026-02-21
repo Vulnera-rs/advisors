@@ -48,10 +48,10 @@ impl ReportAggregator {
     /// Extract a CVE ID from a string using a compiled regex.
     pub fn extract_cve_from_string(text: &str) -> Option<String> {
         // Use a static, pre-compiled regex for performance.
-        if let Ok(regex) = &*CVE_REGEX {
-            if let Some(caps) = regex.captures(text) {
-                return Some(caps[1].to_uppercase());
-            }
+        if let Ok(regex) = &*CVE_REGEX
+            && let Some(caps) = regex.captures(text)
+        {
+            return Some(caps[1].to_uppercase());
         }
         None
     }
@@ -149,17 +149,17 @@ impl ReportAggregator {
         target.affected.extend(source.affected);
 
         // Merge details (prefer longer)
-        if let Some(d) = &source.details {
-            if target.details.is_none() || d.len() > target.details.as_ref().unwrap().len() {
-                target.details = Some(d.clone());
-            }
+        if let Some(d) = &source.details
+            && (target.details.is_none() || d.len() > target.details.as_ref().unwrap().len())
+        {
+            target.details = Some(d.clone());
         }
 
         // Merge summary (prefer longer)
-        if let Some(s) = &source.summary {
-            if target.summary.is_none() || s.len() > target.summary.as_ref().unwrap().len() {
-                target.summary = Some(s.clone());
-            }
+        if let Some(s) = &source.summary
+            && (target.summary.is_none() || s.len() > target.summary.as_ref().unwrap().len())
+        {
+            target.summary = Some(s.clone());
         }
 
         // Merge enrichment data
@@ -175,12 +175,12 @@ impl ReportAggregator {
         let enrichment = target.enrichment.get_or_insert_with(Enrichment::default);
 
         // EPSS: prefer higher scores (more conservative)
-        if let Some(score) = source.epss_score {
-            if enrichment.epss_score.map(|s| score > s).unwrap_or(true) {
-                enrichment.epss_score = Some(score);
-                enrichment.epss_percentile = source.epss_percentile;
-                enrichment.epss_date = source.epss_date;
-            }
+        if let Some(score) = source.epss_score
+            && enrichment.epss_score.map(|s| score > s).unwrap_or(true)
+        {
+            enrichment.epss_score = Some(score);
+            enrichment.epss_percentile = source.epss_percentile;
+            enrichment.epss_date = source.epss_date;
         }
 
         // KEV: OR the flags (if any source says it's KEV, it's KEV)
@@ -196,11 +196,11 @@ impl ReportAggregator {
         }
 
         // CVSS: prefer higher scores (more conservative)
-        if let Some(score) = source.cvss_v3_score {
-            if enrichment.cvss_v3_score.map(|s| score > s).unwrap_or(true) {
-                enrichment.cvss_v3_score = Some(score);
-                enrichment.cvss_v3_severity = source.cvss_v3_severity;
-            }
+        if let Some(score) = source.cvss_v3_score
+            && enrichment.cvss_v3_score.map(|s| score > s).unwrap_or(true)
+        {
+            enrichment.cvss_v3_score = Some(score);
+            enrichment.cvss_v3_severity = source.cvss_v3_severity;
         }
     }
 }

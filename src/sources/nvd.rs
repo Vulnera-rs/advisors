@@ -257,51 +257,51 @@ impl AdvisorySource for NVDSource {
                     for config in configurations {
                         for node in config.nodes {
                             for cpe_match in node.cpe_match {
-                                if cpe_match.vulnerable {
-                                    if let Ok(cpe_uri) = cpe::uri::Uri::parse(&cpe_match.criteria) {
-                                        let vendor = cpe_uri.vendor().to_string();
-                                        let product = cpe_uri.product().to_string();
-                                        let version = cpe_uri.version().to_string();
+                                if cpe_match.vulnerable
+                                    && let Ok(cpe_uri) = cpe::uri::Uri::parse(&cpe_match.criteria)
+                                {
+                                    let vendor = cpe_uri.vendor().to_string();
+                                    let product = cpe_uri.product().to_string();
+                                    let version = cpe_uri.version().to_string();
 
-                                        // Very basic heuristic
-                                        let ecosystem = if vendor == "apache" {
-                                            "maven"
-                                        } else if vendor == "npm" {
-                                            "npm"
-                                        } else {
-                                            "generic"
-                                        };
+                                    // Very basic heuristic
+                                    let ecosystem = if vendor == "apache" {
+                                        "maven"
+                                    } else if vendor == "npm" {
+                                        "npm"
+                                    } else {
+                                        "generic"
+                                    };
 
-                                        let purl = packageurl::PackageUrl::new(ecosystem, &product)
-                                            .ok()
-                                            .map(|mut p| {
-                                                if !version.is_empty() && version != "*" {
-                                                    let _ = p.with_version(version.clone());
-                                                }
-                                                if ecosystem == "maven" {
-                                                    let _ = p.with_namespace(vendor.clone());
-                                                }
-                                                p.to_string()
-                                            });
-
-                                        let (ranges, versions, range_translation) =
-                                            Self::translate_cpe_match(&cpe_match, &version);
-
-                                        affected.push(crate::models::Affected {
-                                            package: crate::models::Package {
-                                                ecosystem: ecosystem.to_string(),
-                                                name: product,
-                                                purl,
-                                            },
-                                            ranges,
-                                            versions,
-                                            ecosystem_specific: None,
-                                            database_specific: Some(serde_json::json!({
-                                                "cpe": cpe_match.criteria,
-                                                "range_translation": range_translation,
-                                            })),
+                                    let purl = packageurl::PackageUrl::new(ecosystem, &product)
+                                        .ok()
+                                        .map(|mut p| {
+                                            if !version.is_empty() && version != "*" {
+                                                let _ = p.with_version(version.clone());
+                                            }
+                                            if ecosystem == "maven" {
+                                                let _ = p.with_namespace(vendor.clone());
+                                            }
+                                            p.to_string()
                                         });
-                                    }
+
+                                    let (ranges, versions, range_translation) =
+                                        Self::translate_cpe_match(&cpe_match, &version);
+
+                                    affected.push(crate::models::Affected {
+                                        package: crate::models::Package {
+                                            ecosystem: ecosystem.to_string(),
+                                            name: product,
+                                            purl,
+                                        },
+                                        ranges,
+                                        versions,
+                                        ecosystem_specific: None,
+                                        database_specific: Some(serde_json::json!({
+                                            "cpe": cpe_match.criteria,
+                                            "range_translation": range_translation,
+                                        })),
+                                    });
                                 }
                             }
                         }
@@ -321,25 +321,25 @@ impl AdvisorySource for NVDSource {
                 let mut alias_set: HashSet<String> = HashSet::new();
                 for r in &cve.references {
                     // GHSA: https://github.com/advisories/GHSA-xxxx-xxxx-xxxx
-                    if let Ok(ghsa_regex) = &*GHSA_REGEX {
-                        if let Some(caps) = ghsa_regex.captures(&r.url) {
-                            alias_set.insert(caps[1].to_uppercase());
-                        }
+                    if let Ok(ghsa_regex) = &*GHSA_REGEX
+                        && let Some(caps) = ghsa_regex.captures(&r.url)
+                    {
+                        alias_set.insert(caps[1].to_uppercase());
                     }
 
                     // OSV: https://osv.dev/vulnerability/<id>
-                    if let Ok(osv_regex) = &*OSV_REGEX {
-                        if let Some(caps) = osv_regex.captures(&r.url) {
-                            let osv_id = caps[1].to_string();
-                            // If the OSV id looks like a CVE, don't add it here (CVE already present)
-                            let is_cve = if let Ok(cve_regex) = &*CVE_REGEX {
-                                cve_regex.captures(&osv_id).is_some()
-                            } else {
-                                false
-                            };
-                            if !is_cve {
-                                alias_set.insert(osv_id);
-                            }
+                    if let Ok(osv_regex) = &*OSV_REGEX
+                        && let Some(caps) = osv_regex.captures(&r.url)
+                    {
+                        let osv_id = caps[1].to_string();
+                        // If the OSV id looks like a CVE, don't add it here (CVE already present)
+                        let is_cve = if let Ok(cve_regex) = &*CVE_REGEX {
+                            cve_regex.captures(&osv_id).is_some()
+                        } else {
+                            false
+                        };
+                        if !is_cve {
+                            alias_set.insert(osv_id);
                         }
                     }
                 }
@@ -373,14 +373,14 @@ impl AdvisorySource for NVDSource {
             }
 
             // Optional limit on results (useful for testing or incremental loading)
-            if let Some(max) = self.max_results {
-                if start_index >= max {
-                    info!(
-                        "Stopping NVD sync at configured limit (fetched {} of {} items)",
-                        start_index, total_results
-                    );
-                    break;
-                }
+            if let Some(max) = self.max_results
+                && start_index >= max
+            {
+                info!(
+                    "Stopping NVD sync at configured limit (fetched {} of {} items)",
+                    start_index, total_results
+                );
+                break;
             }
         }
 

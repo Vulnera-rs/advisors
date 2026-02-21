@@ -116,10 +116,10 @@ pub fn extract_fixed_versions(
                 }
 
                 for event in &range.events {
-                    if let Event::Fixed(version) = event {
-                        if !fixed_versions.contains(version) {
-                            fixed_versions.push(version.clone());
-                        }
+                    if let Event::Fixed(version) = event
+                        && !fixed_versions.contains(version)
+                    {
+                        fixed_versions.push(version.clone());
                     }
                 }
             }

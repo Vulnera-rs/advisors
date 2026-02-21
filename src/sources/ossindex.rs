@@ -323,10 +323,9 @@ impl OssIndexSource {
                     if let Some(advisory) = advisories
                         .iter_mut()
                         .find(|a: &&mut Advisory| a.id == advisory_id)
+                        && let Some(affected) = self.extract_affected(&report.coordinates, vuln)
                     {
-                        if let Some(affected) = self.extract_affected(&report.coordinates, vuln) {
-                            advisory.affected.push(affected);
-                        }
+                        advisory.affected.push(affected);
                     }
                     continue;
                 }
@@ -344,17 +343,17 @@ impl OssIndexSource {
     /// Generate a stable advisory ID from OSS Index vulnerability.
     fn generate_advisory_id(&self, vuln: &OssVulnerability) -> String {
         // Prefer CVE if available, otherwise use OSS Index ID
-        if let Some(ref cve) = vuln.cve {
-            if !cve.is_empty() {
-                return cve.clone();
-            }
+        if let Some(ref cve) = vuln.cve
+            && !cve.is_empty()
+        {
+            return cve.clone();
         }
 
         // Check display_name for CVE pattern
-        if let Some(ref name) = vuln.display_name {
-            if name.starts_with("CVE-") {
-                return name.clone();
-            }
+        if let Some(ref name) = vuln.display_name
+            && name.starts_with("CVE-")
+        {
+            return name.clone();
         }
 
         // Extract CVE from reference URL if present

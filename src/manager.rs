@@ -978,10 +978,10 @@ impl VulnerabilityManager {
         }
 
         intervals.into_iter().any(|interval| {
-            if let Some(start) = &interval.start {
-                if v < *start {
-                    return false;
-                }
+            if let Some(start) = &interval.start
+                && v < *start
+            {
+                return false;
             }
 
             match (&interval.end, interval.end_inclusive) {
@@ -1060,10 +1060,10 @@ impl VulnerabilityManager {
         }
 
         intervals.into_iter().any(|interval| {
-            if let Some(start) = &interval.start {
-                if Self::cmp_dotted(&version_parts, start) == Ordering::Less {
-                    return false;
-                }
+            if let Some(start) = &interval.start
+                && Self::cmp_dotted(&version_parts, start) == Ordering::Less
+            {
+                return false;
             }
 
             match (&interval.end, interval.end_inclusive) {
@@ -1263,25 +1263,25 @@ impl VulnerabilityManager {
         }
 
         // Check CWE filter
-        if let Some(ref filter_cwes) = options.cwe_ids {
-            if !filter_cwes.is_empty() {
-                let advisory_cwes = Self::extract_cwes_from_advisory(advisory);
-                // Normalize both filter CWEs and advisory CWEs for consistent matching
-                let normalized_filter: Vec<String> = filter_cwes
-                    .iter()
-                    .map(|c| Self::normalize_cwe_id(c))
-                    .collect();
-                let normalized_advisory: Vec<String> = advisory_cwes
-                    .iter()
-                    .map(|c| Self::normalize_cwe_id(c))
-                    .collect();
-                // Advisory must have at least one matching CWE
-                let has_match = normalized_filter
-                    .iter()
-                    .any(|cwe| normalized_advisory.iter().any(|ac| ac == cwe));
-                if !has_match {
-                    return false;
-                }
+        if let Some(ref filter_cwes) = options.cwe_ids
+            && !filter_cwes.is_empty()
+        {
+            let advisory_cwes = Self::extract_cwes_from_advisory(advisory);
+            // Normalize both filter CWEs and advisory CWEs for consistent matching
+            let normalized_filter: Vec<String> = filter_cwes
+                .iter()
+                .map(|c| Self::normalize_cwe_id(c))
+                .collect();
+            let normalized_advisory: Vec<String> = advisory_cwes
+                .iter()
+                .map(|c| Self::normalize_cwe_id(c))
+                .collect();
+            // Advisory must have at least one matching CWE
+            let has_match = normalized_filter
+                .iter()
+                .any(|cwe| normalized_advisory.iter().any(|ac| ac == cwe));
+            if !has_match {
+                return false;
             }
         }
 
@@ -1312,14 +1312,13 @@ impl VulnerabilityManager {
         let mut cwes = Vec::new();
 
         // Check database_specific.cwe_ids (OSS Index, some OSV sources)
-        if let Some(ref db_specific) = advisory.database_specific {
-            if let Some(cwe_ids) = db_specific.get("cwe_ids") {
-                if let Some(arr) = cwe_ids.as_array() {
-                    for cwe in arr {
-                        if let Some(s) = cwe.as_str() {
-                            cwes.push(s.to_string());
-                        }
-                    }
+        if let Some(ref db_specific) = advisory.database_specific
+            && let Some(cwe_ids) = db_specific.get("cwe_ids")
+            && let Some(arr) = cwe_ids.as_array()
+        {
+            for cwe in arr {
+                if let Some(s) = cwe.as_str() {
+                    cwes.push(s.to_string());
                 }
             }
         }

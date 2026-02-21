@@ -435,10 +435,10 @@ impl AdvisoryStore for DragonflyStore {
 
         let mut results = Vec::new();
         for (cve_id, json_opt) in cve_ids.iter().zip(data) {
-            if let Some(json) = json_opt {
-                if let Ok(enrichment) = serde_json::from_str(&json) {
-                    results.push((cve_id.clone(), enrichment));
-                }
+            if let Some(json) = json_opt
+                && let Ok(enrichment) = serde_json::from_str(&json)
+            {
+                results.push((cve_id.clone(), enrichment));
             }
         }
 
